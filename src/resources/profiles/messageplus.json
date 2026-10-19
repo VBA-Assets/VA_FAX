@@ -1,0 +1,19 @@
+{
+  "id": "messageplus",
+  "display_name": "メッセージプラス",
+  "verification_status": "verified",
+  "source_note": "メッセージプラス公式FAQ（https://www.messageplus.jp/faq/03.html ・05.html）・機能ページ（https://www.messageplus.jp/function/send.html）確認日2026-07-26",
+  "reference_notice": null,
+  "max_file_size_bytes": 5242880,
+  "page_count_limit": null,
+  "output_formats": ["pdf", "tiff", "jpeg", "png"],
+  "supported_page_sizes": [
+    {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+    {"name": "B4", "width_mm": 257.0, "height_mm": 364.0}
+  ],
+  "normalize_target": {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+  "landscape_accepted": false,
+  "color_capability_note": "送信時にA4以下はA4に、B4以上はB4に自動調整（サービス側）。印刷不許可・パスワード付きPDFは送信不可（本ツール出力は制限なしPDFのため適合）",
+  "resolution_dpi_steps": [200, 150, 120],
+  "jpeg_quality_steps": [85, 65, 45]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "efax",
+  "display_name": "eFax",
+  "verification_status": "reference",
+  "source_note": "公式ヘルプ（添付5件まで・パスワード付き不可・対応形式一覧はhttps://www.efax.co.jp/efax-help/ 配下で確認済、確認日2026-07-26）。容量上限「合計1MB」は送信画面表示文言を引用した二次情報・利用者証言に基づく参考値で、公式ウェブ文書では未確認",
+  "reference_notice": "eFaxの容量上限（1MB）は公式文書で未確認の参考値です。初回はご自身のFAX番号宛のテスト送信を推奨します",
+  "max_file_size_bytes": 1048576,
+  "page_count_limit": null,
+  "output_formats": ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "gif", "jpg", "tif", "png"],
+  "supported_page_sizes": [
+    {"name": "A4", "width_mm": 210.0, "height_mm": 297.0}
+  ],
+  "normalize_target": {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+  "landscape_accepted": false,
+  "color_capability_note": "用紙サイズ・カラー対応の公表仕様は確認できていない（保守的にA4・モノクロ運用を既定とする）",
+  "resolution_dpi_steps": [200, 150, 120],
+  "jpeg_quality_steps": [85, 65, 45]
+}

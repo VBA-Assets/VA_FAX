@@ -1,0 +1,18 @@
+{
+  "id": "sokusoku_fax",
+  "display_name": "秒速FAX送信",
+  "verification_status": "verified",
+  "source_note": "Toones（Karigo）公式サイト ヘルプ（https://fax.toones.jp/send/help.html）・メールFAX送信（https://fax.toones.jp/send/system/fax-mail.html）・同報FAX（https://fax.toones.jp/send/system/fax-sendAll.html）確認日2026-07-27",
+  "reference_notice": null,
+  "max_file_size_bytes": 1048576,
+  "page_count_limit": 10,
+  "output_formats": ["pdf"],
+  "supported_page_sizes": [
+    {"name": "A4", "width_mm": 210.0, "height_mm": 297.0}
+  ],
+  "normalize_target": {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+  "landscape_accepted": false,
+  "color_capability_note": "原則PDFでの送信を推奨（Word・Excel・画像は再現性が低く非推奨）。印刷サイズ換算でA4サイズが標準",
+  "resolution_dpi_steps": [200, 150, 120],
+  "jpeg_quality_steps": [85, 65, 45]
+}

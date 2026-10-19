@@ -1,0 +1,20 @@
+{
+  "id": "movfax",
+  "display_name": "MOVFAX",
+  "verification_status": "verified",
+  "source_note": "日本テレネット公式FAQ「FAX送信機能について」（https://movfax.jp/faq_cat/faq_faxtransmission/）確認日2026-07-26",
+  "reference_notice": null,
+  "max_file_size_bytes": 10485760,
+  "page_count_limit": 255,
+  "output_formats": ["pdf"],
+  "supported_page_sizes": [
+    {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+    {"name": "B4", "width_mm": 257.0, "height_mm": 364.0},
+    {"name": "A3", "width_mm": 297.0, "height_mm": 420.0}
+  ],
+  "normalize_target": {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+  "landscape_accepted": true,
+  "color_capability_note": "画質はファインモード固定（200×200dpi）。B4・A3は受信側環境によりA4縮小の可能性あり",
+  "resolution_dpi_steps": [200, 150, 120],
+  "jpeg_quality_steps": [85, 65, 45]
+}

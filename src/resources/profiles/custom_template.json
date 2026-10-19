@@ -1,0 +1,18 @@
+{
+  "id": "custom",
+  "display_name": "カスタム",
+  "verification_status": "custom",
+  "source_note": "利用者が自身の契約サービスの公表仕様を確認のうえ入力する雛形プロファイル",
+  "reference_notice": "お使いのサービスの公表仕様をご確認のうえ、各項目を入力してください",
+  "max_file_size_bytes": 3145728,
+  "page_count_limit": null,
+  "output_formats": ["pdf"],
+  "supported_page_sizes": [
+    {"name": "A4", "width_mm": 210.0, "height_mm": 297.0}
+  ],
+  "normalize_target": {"name": "A4", "width_mm": 210.0, "height_mm": 297.0},
+  "landscape_accepted": false,
+  "color_capability_note": "利用者が入力してください",
+  "resolution_dpi_steps": [200, 150, 120],
+  "jpeg_quality_steps": [85, 65, 45]
+}
