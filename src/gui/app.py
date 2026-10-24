@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import queue
 import re
+import subprocess
+import sys
 import threading
 import tkinter as tk
 import traceback
@@ -75,6 +77,11 @@ _INPUT_DRAG_OUTSIDE_MARGIN_PX = 16
 _INPUT_SELECTION_MOVE_KEYSYMS = frozenset({
     "Up", "Down", "Home", "End", "Prior", "Next",
 })
+# キーイベントのevent.stateで修飾キーを表すビット。Ctrlはどの環境でも0x4。
+# MacのTk（aqua）ではCommand（⌘）がMod1（0x8）になる（WindowsのTkでは0x8は
+# NumLockを表すため、Mac以外では見ない）。
+_CONTROL_STATE_MASK = 0x4
+_MAC_COMMAND_STATE_MASK = 0x8
 
 _QUALITY_LABELS = ["高", "中", "低"]
 _QUALITY_LEVEL_TO_INDEX = {"high": 0, "medium": 1, "low": 2}
@@ -162,6 +169,20 @@ def _split_output_paths(base_path: Path, count: int) -> list[Path]:
         return [base_path]
     stem, suffix = base_path.stem, base_path.suffix
     return [base_path.with_name(f"{stem}_{i + 1}of{count}{suffix}") for i in range(count)]
+
+
+def _open_folder(folder: Path) -> None:
+    """フォルダをOSのファイル管理画面（エクスプローラー・Finder等）で開く。
+
+    Windowsはos.startfile（従来どおり）。os.startfileはWindowsにしかないため、
+    Mac（ソースから動かす場合。N-03）はopen、その他はxdg-openを使う（いずれも
+    手元のフォルダを開くだけで、外部と通信しない）。開けない場合はOSErrorを送出する。
+    """
+    if sys.platform == "win32":
+        os.startfile(folder)  # noqa: S606 (Windows専用)
+        return
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen([opener, str(folder)])  # noqa: S603
 
 
 def _bring_to_front(window: tk.Misc) -> None:
@@ -583,6 +604,11 @@ class VaFaxApp(TkinterDnD.Tk):
         self._last_output_dir: Optional[Path] = None
         self._converting = False
         self._diagnosis_token = 0
+        # 入力ファイル欄でCtrl併用のキー（Ctrl+A等）と判定するevent.stateのビット。
+        # Mac（N-03）ではCommand（⌘。TkではMod1＝0x8）でも同じ働きにする。
+        self._shortcut_state_mask = _CONTROL_STATE_MASK
+        if theme.is_aqua(self):
+            self._shortcut_state_mask |= _MAC_COMMAND_STATE_MASK
 
         self.title("VA FAX")
         self.resizable(True, True)
@@ -598,6 +624,8 @@ class VaFaxApp(TkinterDnD.Tk):
         # 外に移っていても効くように）。大文字Zはキャップスロック中の取りこぼし対策。
         self.bind_all("<Control-z>", self._on_global_undo, add="+")
         self.bind_all("<Control-Z>", self._on_global_undo, add="+")
+        if theme.is_aqua(self):
+            self._bind_mac_keys()
         self._poll_queue()
         _bring_to_front(self)
 
@@ -949,7 +977,7 @@ class VaFaxApp(TkinterDnD.Tk):
             # Textのタブは文字挿入となるため、通常のフォーカス移動に置き換える。
             event.widget.tk_focusNext().focus_set()
             return "break"
-        if event.state & 0x4:
+        if event.state & self._shortcut_state_mask:
             # Ctrl+X／C／Vは通常<<Cut>>等の仮想イベント側で処理される（同一バインド
             # タグ内で<Key>より優先されるため）が、環境差に備えてここでも受ける。
             key = keysym.lower()
@@ -1330,6 +1358,19 @@ class VaFaxApp(TkinterDnD.Tk):
         # 貼り付けた行を選択状態にして、どこへ入ったかを示す。
         self._set_input_selection(insert_at + 1, insert_at + len(paths))
         return "break"
+
+    def _bind_mac_keys(self) -> None:
+        """Mac（ソースから動かす場合。N-03）のキー操作を、Windowsのキー操作にそろえる。
+
+        - ⌘Z：Ctrl+Zと同じく、メイン画面のどこからでも入力ファイル一覧の取り消しにする
+          （⌘C・⌘X・⌘V・⌘Zは、入力ファイル欄ではTkの<<Copy>>等の仮想イベントとして届く）。
+        - ⌘Q：Tkの既定ではTclのexitで直ちにプロセスを終えるため、プレビューの描画
+          スレッドの後始末（PreviewPane.destroy）を通らない。閉じるボタンと同じく
+          ウィンドウを破棄して終える。
+        """
+        self.bind_all("<Command-z>", self._on_global_undo, add="+")
+        self.bind_all("<Command-Z>", self._on_global_undo, add="+")
+        self.createcommand("::tk::mac::Quit", self.destroy)
 
     def _on_global_undo(self, event) -> Optional[str]:
         """アプリ全体のCtrl+Zを入力ファイル一覧の取り消しとして処理する。
@@ -1953,8 +1994,16 @@ class VaFaxApp(TkinterDnD.Tk):
             messagebox.showinfo("VA FAX", popup_message)
 
     def _open_output_folder(self) -> None:
-        if self._last_output_dir is not None:
-            os.startfile(self._last_output_dir)  # noqa: S606 (Windows専用)
+        if self._last_output_dir is None:
+            return
+        if sys.platform == "win32":
+            _open_folder(self._last_output_dir)
+            return
+        try:
+            _open_folder(self._last_output_dir)
+        except OSError:  # Mac等でopen／xdg-openを起動できない場合
+            messagebox.showerror(
+                "VA FAX", "出力フォルダを開けませんでした。出力先のフォルダを直接開いてください。")
 
     # ------------------------------------------------------------------ 設定メニュー
 

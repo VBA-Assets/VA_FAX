@@ -34,6 +34,19 @@ VISIBLE_BUFFER = 3  # 表示範囲の前後、先読みするページ数
 POLL_INTERVAL_MS = 80
 
 
+def wheel_scroll_units(delta: int, aqua: bool) -> int:
+    """マウスホイールのevent.deltaを、サムネイル一覧のスクロール行数に換算する（下向きが正）。
+
+    WindowsのTkはホイール1刻みをdelta=±120で送るため、120で割る（従来どおり）。
+    MacのTk（aqua。ソースから動かす場合。N-03）は、Tk 8.6では1刻みを±1程度の
+    小さな値で送るため、120で割ると0になり一覧が動かない。そこでMacでは、
+    120未満の値はそのまま行数とし、120以上（120刻みで送る版のTk）は120で割る。
+    """
+    if aqua and abs(delta) < 120:
+        return -delta
+    return int(-1 * (delta / 120))
+
+
 def _is_self_or_descendant(widget: tk.Misc, ancestor: tk.Misc) -> bool:
     """widgetがancestor自身またはその子孫かどうかを、Tkのパス名の階層で判定する。"""
     widget_path, ancestor_path = str(widget), str(ancestor)
@@ -112,6 +125,8 @@ class PreviewPane(ttk.Frame):
         self._pending_thumbnails: set[int] = set()
         self._large_image: Optional[ImageTk.PhotoImage] = None
         self._building = False
+        # ホイールの値（event.delta）の刻みがWindowsとMacで異なるため（wheel_scroll_units）
+        self._aqua = theme.is_aqua(self)
 
         self._render_queue: "queue.Queue[Optional[_RenderRequest]]" = queue.Queue()
         self._result_queue: "queue.Queue[dict]" = queue.Queue()
@@ -412,6 +427,10 @@ class PreviewPane(ttk.Frame):
             self._on_page_up()
         elif getattr(event, "num", None) == 5:
             self._on_page_down()
+        elif self._aqua and event.delta == 0:
+            # Macのトラックパッドは向きを持たない（delta=0の）イベントも送ることがあり、
+            # 次ページへの送りと誤らないよう無視する（Windowsの動きは変えないためMacに限る）。
+            pass
         elif event.delta > 0:
             self._on_page_up()
         else:
@@ -447,7 +466,7 @@ class PreviewPane(ttk.Frame):
         elif getattr(event, "num", None) == 5:
             delta = 1
         else:
-            delta = int(-1 * (event.delta / 120))
+            delta = wheel_scroll_units(event.delta, self._aqua)
         self._canvas.yview_scroll(delta, "units")
         self._request_visible_range()
         return "break"

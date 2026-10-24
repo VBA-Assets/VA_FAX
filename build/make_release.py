@@ -3,13 +3,13 @@
 
 前提: dist/VA_FAX.exe がビルド済みであること（build/motfax.spec参照）。
 実行方法（リポジトリルートで）: python build/make_release.py
-出力: dist/VA_FAX_v111.zip
+出力: dist/VA_FAX_v112.zip
 
 zipの構成:
-    VA_FAX_v111/
+    VA_FAX_v112/
         VA_FAX.exe                          … 本体（これだけで動作する）
         README.md                           … 利用者向け説明（VBAアセット掲載文と同一）
-        VA_FAX_操作マニュアル_Ver111.pdf     … 操作マニュアル
+        VA_FAX_操作マニュアル_Ver112.pdf     … 操作マニュアル
         LICENSE.txt                         … MITライセンス（オープンソース）
         source/                             … ソースコード一式（gitで管理している全ファイル。
                                               ただしCLAUDE.md等の開発プロセス用ファイルは除く）
@@ -25,7 +25,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-VERSION = "v111"
+VERSION = "v112"
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 EXE = DIST / "VA_FAX.exe"
@@ -51,7 +51,7 @@ def main() -> None:
 
     DIST.mkdir(exist_ok=True)
     with zipfile.ZipFile(OUTPUT, "w", zipfile.ZIP_DEFLATED) as zf:
-        manual_name = "VA_FAX_操作マニュアル_Ver111.pdf"
+        manual_name = "VA_FAX_操作マニュアル_Ver112.pdf"
         zf.write(EXE, f"{TOP}/VA_FAX.exe")
         zf.write(ROOT / "README.md", f"{TOP}/README.md")
         zf.write(ROOT / "docs" / manual_name, f"{TOP}/{manual_name}")

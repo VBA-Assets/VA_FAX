@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -56,7 +57,13 @@ class Settings:
 
 
 def app_data_dir() -> Path:
-    """VA FAXの管理領域（%APPDATA%\\VA_FAX）を返す。"""
+    """VA FAXの管理領域（%APPDATA%\\VA_FAX）を返す。
+
+    Windows以外（Macでソースから動かす場合。N-03）では、ホームの .va_fax とする
+    （Windows風のAppData\\Roamingフォルダを作らないため）。
+    """
+    if sys.platform != "win32":
+        return Path.home() / ".va_fax"
     appdata = os.environ.get("APPDATA")
     base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
     return base / "VA_FAX"

@@ -43,6 +43,28 @@ Wordから出力したPDFやスキャンした資料をそのまま送ろうと�
 - インストール不要。`VA_FAX.exe` をダブルクリックするだけで起動します
 - インターネット接続不要（完全ローカル動作。FAXの送信操作自体は、
   各インターネットFAXサービスの画面で別途行ってください）
+- Macでは、ソースから動かす場合に限り使えます（動作は保証しません。下記）
+
+### Macで動かす（動作は保証しません）
+
+Mac用の実行ファイルは配っていません。配布物の `source` フォルダ（GitHubの
+VBA-Assets/VA_FAX と同じもの）を、Python 3（Tkの入ったもの。python.orgの
+macOS用インストーラーのPythonには入っています）で動かしてください。
+
+```
+cd source
+python3 -m pip install -r requirements.txt
+python3 src/main.py
+```
+
+- **標準のMOT/FAXはMacから使えません**：MOT/FAXの公表仕様では、利用できる機器が
+  Windows PC・Android・iPhoneで、Macは含まれていません。Macでは、お使いのサービス
+  （MOVFAX・メッセージプラス・秒速FAX送信など）のプロファイルを選んでください。
+  そのサービスをMacから使えるかは、各サービスの案内でご確認ください
+- 設定・追加プロファイル・ログは、`%APPDATA%\VA_FAX` ではなく、ホームの
+  `.va_fax` フォルダに置かれます
+- Ctrlのキー（Ctrl+Z・Ctrl+A など）は、⌘でも効きます
+- Macの実機では動作を確かめていません
 
 ## 使い方
 

@@ -59,10 +59,41 @@ def apply_app_icon(window: tk.Tk) -> None:
     自動的に同じアイコンが適用される。アイコンはbuild/make_icon.pyで生成し、
     resources/icon.icoとしてexeにも同梱される（build/motfax.spec）。
     見つからない場合（開発中の未生成等）は既定アイコンのまま起動を続ける。
+
+    Windows以外（Macでソースから動かす場合。N-03）のTkは.icoをiconbitmapで
+    受け付けず、TclErrorで起動できなくなるため、Pillowで読み込んだ画像を
+    iconphotoで与える（Macではアプリのアイコン〔Dock〕になる）。読み込めない場合は
+    既定アイコンのまま起動を続ける。
     """
     icon_path = Path(__file__).resolve().parent.parent / "resources" / "icon.ico"
-    if icon_path.is_file():
+    if not icon_path.is_file():
+        return
+    if windowing_system(window) == "win32":
         window.iconbitmap(default=str(icon_path))
+        return
+    try:
+        from PIL import Image, ImageTk
+
+        with Image.open(icon_path) as image:
+            photo = ImageTk.PhotoImage(image.convert("RGBA"), master=window)
+        window.iconphoto(True, photo)
+    except (ImportError, OSError, tk.TclError):
+        return
+    # PhotoImageは参照が無くなると破棄され、アイコンが消えるため、ウィンドウに持たせる。
+    window._va_fax_icon_photo = photo  # type: ignore[attr-defined]
+
+
+def windowing_system(widget: tk.Misc) -> str:
+    """Tkのウィンドウシステム名を返す（Windows="win32"、Mac="aqua"、Linux等="x11"）。
+
+    Mac固有のキー（Command）・ホイールの値などの切替に使う。
+    """
+    return str(widget.tk.call("tk", "windowingsystem"))
+
+
+def is_aqua(widget: tk.Misc) -> bool:
+    """MacのTk（aqua）で動いているかを返す。"""
+    return windowing_system(widget) == "aqua"
 
 
 def resolve_remove_cursor(widget: tk.Misc) -> str:
@@ -80,10 +111,13 @@ def resolve_remove_cursor(widget: tk.Misc) -> str:
     読み込ませる。読み込んだカーソルは、参照を持つウィジェットが1つも無くなると
     Tkが解放してしまい、次に指定したときに相対パスで読み直そうとして失敗するため、
     配置しない小さなウィジェットに常時持たせておく。
+
+    Windows以外（Mac等）のTkは.curを読めないことがあり、代替のX_cursorも
+    MacのTkには無い場合があるため、代替も使えなければTkの既定のカーソル（""）とする。
     """
     path = Path(__file__).resolve().parent.parent / "resources" / "trash.cur"
     if not path.is_file():
-        return REMOVE_CURSOR_FALLBACK
+        return _fallback_remove_cursor(widget)
 
     spec = f"@{path.name}"
     holder = tk.Frame(widget.winfo_toplevel(), width=1, height=1)  # 参照保持用（配置しない）
@@ -93,10 +127,22 @@ def resolve_remove_cursor(widget: tk.Misc) -> str:
         holder.configure(cursor=spec)
     except (tk.TclError, OSError):
         holder.destroy()
-        return REMOVE_CURSOR_FALLBACK
+        return _fallback_remove_cursor(widget)
     finally:
         os.chdir(previous_cwd)
     return spec
+
+
+def _fallback_remove_cursor(widget: tk.Misc) -> str:
+    """同梱カーソルを使えない場合の代替カーソル（使えなければTkの既定のカーソル）を返す。"""
+    probe = tk.Frame(widget.winfo_toplevel(), width=1, height=1)  # 試し用（配置しない）
+    try:
+        probe.configure(cursor=REMOVE_CURSOR_FALLBACK)
+    except tk.TclError:
+        return ""
+    finally:
+        probe.destroy()
+    return REMOVE_CURSOR_FALLBACK
 
 
 def create_button(parent: tk.Misc, accent: bool = False, **kwargs) -> ttk.Button:

@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+
+from config.settings import app_data_dir
 
 _BUNDLED_PROFILES_DIR = Path(__file__).resolve().parent.parent / "resources" / "profiles"
 
@@ -203,10 +204,11 @@ def load_profile_file(path: Path) -> Profile:
 
 
 def appdata_profiles_dir() -> Path:
-    """追加プロファイルの配置先ディレクトリ（%APPDATA%\\VA_FAX\\profiles）を返す。"""
-    appdata = os.environ.get("APPDATA")
-    base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
-    return base / "VA_FAX" / "profiles"
+    """追加プロファイルの配置先ディレクトリ（%APPDATA%\\VA_FAX\\profiles）を返す。
+
+    管理領域の場所（Windows以外ではホームの .va_fax）はsettings.app_data_dir()に従う。
+    """
+    return app_data_dir() / "profiles"
 
 
 def _profile_to_dict(profile: Profile) -> dict[str, Any]:
