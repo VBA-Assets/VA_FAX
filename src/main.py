@@ -24,7 +24,8 @@ def _run_smoke_test(spec: str) -> int:
     環境変数 VA_FAX_SMOKE_TEST="入力PDFパス;出力PDFパス" が設定されている場合のみ
     実行される。ウィンドウは表示せず（withdraw）、同梱プロファイルの読込・
     変換エンジン一式（pypdfium2・Pillow・img2pdf）・tkinter／tkinterdnd2の
-    ネイティブ部品がexeに正しく同梱されていることを終了コードで報告する
+    ネイティブ部品・リボンのアイコン（F-15）がexeに正しく同梱されていることを
+    終了コードで報告する
     （windowed exeでは標準出力が使えないため、成否は終了コードと出力ファイルで確認する）。
     """
     input_str, output_str = spec.split(";", 1)
@@ -42,6 +43,20 @@ def _run_smoke_test(spec: str) -> int:
     root = TkinterDnD.Tk()
     root.withdraw()
     theme.apply_flat_theme(root)
+
+    # リボンのアイコン（同梱PNG）を実際に読み、exeに入っていることを確かめる（F-15）。
+    from gui.icons import BUTTON_ICONS, IconSet
+    from gui.ribbon import Ribbon
+
+    icons = IconSet(root)
+    ribbon = Ribbon(root, icons)
+    group = ribbon.group("入力")
+    group.large("入力元...", lambda: None)
+    for name in sorted(set(BUTTON_ICONS.values())):
+        for large in (False, True):
+            if icons.image(name, large=large) is None or icons.image(name, disabled=True) is None:
+                raise SystemExit(f"アイコンが同梱されていません：{name}")
+
     root.update()
     root.destroy()
     return 0

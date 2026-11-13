@@ -35,6 +35,12 @@ COLOR_WARNING = "#a05a00"        # 注意喚起テキスト（参考プロファ
 
 COLOR_ACCENT = "#0078d4"         # アクセント（フォーカス枠線・主要ボタンの強調枠）
 
+# リボン（ribbon.py）の色。アイコンはVA Case・VA mints・VA Documentと同じ2色の形とし、
+# ボタンはWordのリボンと同じく、ふだんは枠も地もなく、マウスを重ねたときだけ淡い青の地と枠を出す。
+COLOR_ICON_TINT = "#9cc9f0"           # アイコンの塗りつぶし版を敷く色（薄い青）
+COLOR_ICON_TINT_DISABLED = "#e2e2e2"  # 押せないときの、塗りつぶし版の色
+COLOR_RIBBON_HOVER_BORDER = "#a9cdee"  # リボンのボタンにマウスを重ねたときの枠線
+
 COLOR_DISABLED_BG = "#f0f0f0"    # 無効化ウィジェットの背景（ウィンドウ地色に同化）
 COLOR_DISABLED_TEXT = "#a3a3a3"  # 無効化ウィジェットの文字色
 
@@ -44,6 +50,15 @@ COLOR_SCROLL_THUMB_ACTIVE = "#a8a8a8"
 
 _ACCENT_BUTTON_STYLE = "Accent.TButton"
 _NORMAL_BUTTON_STYLE = "TButton"
+
+# リボン（ribbon.py）のスタイル名
+RIBBON_FRAME_STYLE = "Ribbon.TFrame"
+RIBBON_LABEL_STYLE = "Ribbon.TLabel"
+RIBBON_GROUP_LABEL_STYLE = "RibbonGroup.TLabel"
+RIBBON_NOTE_LABEL_STYLE = "RibbonNote.TLabel"
+RIBBON_BUTTON_STYLE = "Ribbon.TButton"
+RIBBON_LARGE_BUTTON_STYLE = "RibbonLarge.TButton"
+RIBBON_ACCENT_BUTTON_STYLE = "RibbonAccent.TButton"
 
 # 同梱カーソル（trash.cur）を読み込めない環境で使う代替カーソル
 REMOVE_CURSOR_FALLBACK = "X_cursor"
@@ -94,6 +109,19 @@ def windowing_system(widget: tk.Misc) -> str:
 def is_aqua(widget: tk.Misc) -> bool:
     """MacのTk（aqua）で動いているかを返す。"""
     return windowing_system(widget) == "aqua"
+
+
+def scale(widget: tk.Misc) -> float:
+    """画面の拡大率（96 dpi を 1.0 とする）。ピクセルで決めた幅・高さに掛けて使う。"""
+    try:
+        return max(1.0, widget.winfo_fpixels("1i") / 96.0)
+    except tk.TclError:
+        return 1.0
+
+
+def px(widget: tk.Misc, n: int) -> int:
+    """96 dpi のときの n ピクセルを、いまの画面のピクセル数にする。"""
+    return int(round(n * scale(widget)))
 
 
 def resolve_remove_cursor(widget: tk.Misc) -> str:
@@ -244,6 +272,57 @@ def apply_flat_theme(root: tk.Misc) -> None:
         lightcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
         darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
     )
+
+    # リボンのボタン（VA mints・VA Case・VA Documentと同じ）：Wordのリボンと同じく、
+    # ふだんは枠も地もなく、マウスを重ねたときだけ淡い青の地と枠を出す（「各コマンド
+    # ボタンには常時、細い枠線を表示する」という方針の、リボンだけの例外）。
+    # 大きいボタン（RibbonLarge）はアイコンの下に文字、小さいボタン（Ribbon）は
+    # アイコンの右に文字を置く。
+    _ribbon_states = dict(
+        background=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        lightcolor=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        darkcolor=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        bordercolor=[("disabled", COLOR_BG), ("pressed", COLOR_RIBBON_HOVER_BORDER),
+                     ("active", COLOR_RIBBON_HOVER_BORDER)],
+        foreground=[("disabled", COLOR_DISABLED_TEXT)],
+    )
+    for _name, _padding, _anchor in (
+        (RIBBON_BUTTON_STYLE, (3, 1), "w"),
+        (RIBBON_LARGE_BUTTON_STYLE, (4, 2), "center"),
+    ):
+        style.configure(
+            _name,
+            background=COLOR_BG, foreground=COLOR_TEXT, bordercolor=COLOR_BG,
+            lightcolor=COLOR_BG, darkcolor=COLOR_BG,
+            padding=_padding, width=0, anchor=_anchor, justify="center", relief="raised",
+        )
+        style.map(_name, **_ribbon_states)
+
+    # リボンの主要な操作（入力元・変換して出力の大きいボタン）：見落とされないよう、
+    # ほかのリボンのボタンと違って、いつも地色と青い枠を出す（主要な操作ボタンは
+    # 枠線の色をアクセント色にする、という方針に合わせる）。
+    style.configure(
+        RIBBON_ACCENT_BUTTON_STYLE,
+        background=COLOR_CONTROL_BG, foreground=COLOR_TEXT, bordercolor=COLOR_ACCENT,
+        lightcolor=COLOR_CONTROL_BG, darkcolor=COLOR_CONTROL_BG,
+        padding=(4, 2), width=0, anchor="center", justify="center", relief="raised",
+    )
+    style.map(
+        RIBBON_ACCENT_BUTTON_STYLE,
+        background=[("disabled", COLOR_DISABLED_BG), ("pressed", COLOR_PRESSED_BG),
+                    ("active", COLOR_HOVER_BG)],
+        foreground=[("disabled", COLOR_DISABLED_TEXT)],
+        bordercolor=[("disabled", COLOR_BORDER), ("!disabled", COLOR_ACCENT)],
+        lightcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+    )
+
+    style.configure(RIBBON_FRAME_STYLE, background=COLOR_BG)
+    style.configure(RIBBON_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_TEXT)
+    # 組の名前（リボンの下端に小さく出す）と、組の中の注記
+    style.configure(RIBBON_GROUP_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_MUTED,
+                    padding=(0, 0, 0, 2))
+    style.configure(RIBBON_NOTE_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_MUTED)
 
     # ラジオボタン：判定枠（インジケータ）は入力欄と同じ白地、枠線は共通の枠線色。
     # チェックボックスはclassic tk.Checkbutton（後述のoption_add）のまま残す

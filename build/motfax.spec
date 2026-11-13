@@ -7,6 +7,8 @@
 # 同梱が必要なもの:
 # - resources/profiles/*.json … 同梱サービスプロファイル（F-27。config/profiles.pyが
 #   __file__基準の相対パス resources/profiles で参照するため、同じ相対位置に配置する）
+# - gui/icons/*.png … リボンのボタンのアイコン（F-15。build/make_ribbon_icons.pyで生成。
+#   gui/icons.pyが凍結時にsys._MEIPASS/gui/iconsを見るため、同じ相対位置に配置する）
 # - tkinterdnd2 … ドラッグ＆ドロップ用のtkdnd Tclパッケージ（ネイティブDLL含む。F-15）
 # - pypdfium2_raw の pdfium.dll … PDFラスタライズエンジン（F-07）
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
@@ -16,6 +18,8 @@ datas = [("../src/resources/profiles", "resources/profiles")]
 datas += [("../src/resources/icon.ico", "resources")]
 # 「一覧から取り除く」操作中のマウスカーソル（F-15。build/make_cursor.pyで生成）
 datas += [("../src/resources/trash.cur", "resources")]
+# リボンのボタンのアイコン（F-15。LICENSEはFluent UI System IconsのMIT License）
+datas += [("../src/gui/icons", "gui/icons")]
 datas += collect_data_files("tkinterdnd2")
 
 binaries = collect_dynamic_libs("pypdfium2_raw")

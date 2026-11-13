@@ -15,6 +15,7 @@ import threading
 import tkinter as tk
 import traceback
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -35,10 +36,14 @@ from core import diagnose as diagnose_module
 from core import merge as merge_module
 from core import size_control as size_control_module
 from core.size_control import format_bytes_as_size as _format_size
+import diagnostics
 from gui import theme
+from gui.icons import IconSet
 from gui.preview import PreviewPane
+from gui.ribbon import Ribbon
 from logging_setup import setup_logger
 from report import ReportData, save_report
+from version import __version__
 
 CONTACT_NOTICE = "問題が解決しない場合は、VBAアセット（vba-assets.net）のお問い合わせ窓口までご連絡ください。"
 
@@ -601,6 +606,8 @@ class VaFaxApp(TkinterDnD.Tk):
         self.diagnosis: Optional[diagnose_module.Diagnosis] = None
         self._diagnosed_input_count = 0
         self._message_queue: "queue.Queue[dict]" = queue.Queue()
+        # 起きた誤りの記録（型と場所だけ。［ヘルプ］→［診断情報をコピー］に載せる）
+        self._errors = diagnostics.ErrorLog()
         self._last_output_dir: Optional[Path] = None
         self._converting = False
         self._diagnosis_token = 0
@@ -612,7 +619,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         self.title("VA FAX")
         self.resizable(True, True)
-        self.minsize(900, 620)
+        self.minsize(900, 700)
         self.configure(bg=theme.COLOR_BG)
 
         self._build_variables()
@@ -628,6 +635,13 @@ class VaFaxApp(TkinterDnD.Tk):
             self._bind_mac_keys()
         self._poll_queue()
         _bring_to_front(self)
+
+    def report_callback_exception(self, exc_type, exc, tb) -> None:
+        """画面の処理（ボタン・キー等）で起きた予期しない誤りを覚える（Tkの既定どおりログにも出す）。"""
+        self._errors.record(exc, "画面の処理")
+        self.logger.error("画面の処理で予期しないエラーが発生しました：%s",
+                          _format_exception_for_log(exc))
+        super().report_callback_exception(exc_type, exc, tb)
 
     # ------------------------------------------------------------------ 初期化
 
@@ -657,8 +671,109 @@ class VaFaxApp(TkinterDnD.Tk):
         settings_menu.add_command(label="変換の既定設定...", command=self._on_open_defaults)
         menubar.add_cascade(label="設定", menu=settings_menu)
 
+        # ［ヘルプ］→［診断情報をコピー］（2026-11-10 班長決定：Pythonのツールに、
+        # 次の版上げのときに入れる）。不具合をAI・作成者に相談するときに渡す文を作る。
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="診断情報をコピー", command=self._copy_diagnostics)
+        help_menu.add_separator()
+        help_menu.add_command(label="VA FAX について", command=self._show_about)
+        menubar.add_cascade(label="ヘルプ", menu=help_menu)
+
         self.config(menu=menubar)
         self._settings_menu = settings_menu
+
+    def _show_about(self) -> None:
+        messagebox.showinfo(
+            "VA FAX",
+            f"VA FAX  {__version__}\n"
+            "インターネットFAX送信用PDF変換ツール\n\n"
+            "VBAアセット（vba-assets.net）\nMIT License",
+            parent=self,
+        )
+
+    # ------------------------------------------------------------------ 診断情報
+
+    def _copy_diagnostics(self) -> None:
+        """診断情報をクリップボードへコピーする（［ヘルプ］→［診断情報をコピー］）。"""
+        self.clipboard_clear()
+        self.clipboard_append(self._diagnostic_text())
+        messagebox.showinfo(
+            "VA FAX",
+            "診断情報をコピーしました。\n\n"
+            "不具合を相談するときは、これを貼り付けて渡してください。版・環境・設定の数値・"
+            "件数・誤りの起きた場所だけが入っていて、入力・出力ファイルの名前や、ファイル・"
+            "フォルダの場所は入っていません。\n"
+            "渡す前に、メモ帳などに貼り付けて、中身を確かめることができます。",
+            parent=self,
+        )
+
+    def _diagnostic_text(self) -> str:
+        """診断情報の文。
+
+        中身（入力・出力ファイルの名前、フォルダの場所、例外のメッセージの本文）は
+        一切入れない（diagnostics.pyの冒頭・F-24と同じ方針）。
+        """
+        d = diagnostics
+        profile = self.profile
+        defaults = self.settings.defaults
+        lines = [
+            f"VA FAX 診断情報（{datetime.now():%Y-%m-%d %H:%M}）",
+            "※ 入力・出力ファイルの名前、ファイルやフォルダの場所、利用者とPCの名前は"
+            "入っていません。",
+            "",
+        ]
+        lines += ["■ 環境"] + d.environment_lines(self, "VA FAX", __version__) + [""]
+
+        page_limit = "なし" if profile.page_count_limit is None else f"{profile.page_count_limit}ページ"
+        lines += [
+            "■ 対象サービス（プロファイル。F-27）",
+            _profile_constraint_text(profile),
+            f"確認状態：{profile.verification_status}・ページ数上限：{page_limit}",
+            f"解像度の段階：{'→'.join(str(v) for v in profile.resolution_dpi_steps)}dpi・"
+            f"JPEG品質の段階：{'→'.join(str(v) for v in profile.jpeg_quality_steps)}",
+            "",
+        ]
+
+        fixed_set = "設定あり" if defaults.fixed_output_folder else "設定なし"
+        lines += [
+            "■ 変換の既定設定（F-26。フォルダの場所は入れない）",
+            f"出力先：{defaults.output_folder_policy}（固定フォルダ：{fixed_set}）・"
+            f"ファイル名：{defaults.output_name_policy}",
+            f"圧縮方式：{defaults.compression_policy}・ディザ：{defaults.dither_method}・"
+            f"JPEG品質：{defaults.jpeg_quality_level}",
+            f"容量超過：{defaults.capacity_exceeded_method}・削減方式：{defaults.size_reduction_strategy}・"
+            f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}・"
+            f"レポート：{'保存する' if defaults.report_enabled else '保存しない'}",
+            "",
+        ]
+
+        diagnosis = self.diagnosis
+        lines += [
+            "■ いまの画面の状態",
+            f"入力ファイル：{len(self.input_paths)}件",
+            "事前診断：" + ("まだ" if diagnosis is None else
+                          f"済み（{diagnosis.page_count}ページ・"
+                          f"{_format_size(diagnosis.file_size_bytes)}・"
+                          f"テキスト{'あり' if diagnosis.has_text else 'なし'}・"
+                          f"対応外サイズ {len(diagnosis.unsupported_pages)}ページ）"),
+            f"出力ファイル欄：{'入力あり' if self.output_path_var.get().strip() else '未入力'}",
+            f"処理内容：圧縮方式 {self.mode_var.get()}・ディザ {self.dither_label_var.get()}・"
+            f"JPEG品質 {self.quality_label_var.get()}・容量超過 {self.capacity_method_var.get()}・"
+            f"削減方式 {self.reduction_strategy_label_var.get()}・"
+            f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}・"
+            f"レポート {'保存する' if self.report_var.get() else '保存しない'}",
+            f"変換：{'実行中' if self._converting else 'していない'}",
+            "",
+        ]
+
+        records = self._errors.records
+        lines.append(f"■ 起きた誤り（新しいものから {min(len(records), d.SHOW_ERRORS)} 件。"
+                     f"覚えているのは全 {len(records)} 件）")
+        if not records:
+            lines.append("なし")
+        for record in reversed(records[-d.SHOW_ERRORS:]):
+            lines += d.format_record(record)
+        return "\n".join(lines) + "\n"
 
     def _set_settings_menu_enabled(self, enabled: bool) -> None:
         """変換実行中はプロファイル・既定設定の変更を禁止する（B-1。容量判定等の途中すり替わり防止）。"""
@@ -668,7 +783,10 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def _build_widgets(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        # 画面の操作ボタンは、すべて最上段のリボンに集約する（F-15）。
+        self._build_ribbon()
 
         # プレビュー欄（左側・F-30）とコントロール一式（右側）をPanedWindowで分割し、
         # 境界のドラッグでプレビュー欄の幅を変更できるようにする（リサイズ可能）。
@@ -678,7 +796,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self._paned = tk.PanedWindow(
             self, orient="horizontal", sashrelief="flat", sashwidth=6,
             bg=theme.COLOR_BORDER, bd=0)
-        self._paned.grid(row=0, column=0, sticky="nsew")
+        self._paned.grid(row=1, column=0, sticky="nsew")
 
         self.preview_pane = PreviewPane(self._paned)
         controls_frame = ttk.Frame(self._paned)
@@ -703,7 +821,7 @@ class VaFaxApp(TkinterDnD.Tk):
         # あるため。追加は「入力元」ボタンとドラッグ＆ドロップに限定し、削除は
         # Delete／BackSpaceキーによる行単位の削除のみを受け付ける（_on_input_text_key）。
         input_frame = ttk.Frame(controls_frame)
-        input_frame.grid(row=1, column=1, sticky="we", **field_pad)
+        input_frame.grid(row=1, column=1, columnspan=2, sticky="we", **field_pad)
         input_frame.columnconfigure(0, weight=1)
         # 操作対象は「選択中の行」（帯状の反転表示）で示すため、点滅する挿入カーソルは
         # 表示しない（insertwidth=0）。文字単位の入力位置には意味がないため。
@@ -740,9 +858,6 @@ class VaFaxApp(TkinterDnD.Tk):
         for sequence in ("<<PasteSelection>>", "<<Clear>>", "<<Redo>>"):
             input_text.bind(sequence, lambda _e: "break")
 
-        theme.create_button(controls_frame, text="入力元...", command=self._browse_input).grid(
-            row=1, column=2, sticky="nw", **pad)
-
         self.input_text = input_text
         self._input_text_default_fg = input_text.cget("foreground")
         self._input_text_default_cursor = input_text.cget("cursor")
@@ -760,9 +875,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         ttk.Label(controls_frame, text="出力ファイル：").grid(row=4, column=0, sticky="w", **label_pad)
         output_entry = ttk.Entry(controls_frame, textvariable=self.output_path_var, width=55)
-        output_entry.grid(row=4, column=1, sticky="we", **field_pad)
-        theme.create_button(controls_frame, text="出力先...", command=self._browse_output).grid(
-            row=4, column=2, sticky="w", **pad)
+        output_entry.grid(row=4, column=1, columnspan=2, sticky="we", **field_pad)
 
         # 入力ファイル未選択の間は、現在の既定設定（F-26）から導かれる出力先方針
         # （固定フォルダのパス、または「入力ファイルと同じフォルダ」）をグレーで示す。
@@ -774,27 +887,66 @@ class VaFaxApp(TkinterDnD.Tk):
 
         self.progress_bar = ttk.Progressbar(
             controls_frame, variable=self.progress_var, maximum=100, length=300)
-        self.progress_bar.grid(row=5, column=0, columnspan=2, sticky="we", **pad)
+        self.progress_bar.grid(row=5, column=0, columnspan=3, sticky="we", **pad)
         self.progress_bar.grid_remove()
-        self.convert_button = theme.create_button(
-            controls_frame, accent=True, text="変換して出力", command=self._on_convert,
-            width=16, state="disabled")
-        self.convert_button.grid(row=5, column=2, sticky="e", **pad)
 
         ttk.Label(controls_frame, text="処理ログ：").grid(row=6, column=0, sticky="nw", **label_pad)
         self.log_text = tk.Text(controls_frame, height=8, width=64, state="disabled", wrap="word")
         self.log_text.grid(row=6, column=1, columnspan=2, sticky="nswe", **field_pad)
 
-        self.open_folder_button = theme.create_button(
-            controls_frame, text="出力フォルダを開く", command=self._open_output_folder,
-            width=16, state="disabled")
-        self.open_folder_button.grid(row=7, column=2, sticky="e", **pad)
-
         ttk.Label(
             controls_frame,
             text="※ FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。",
             foreground=theme.COLOR_MUTED, anchor="w", justify="left",
-        ).grid(row=8, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+        ).grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+
+    # ------------------------------------------------------------------ リボン（F-15）
+
+    def _build_ribbon(self) -> None:
+        """画面最上段のリボン（Wordのリボンと同じ形。VA mintsと同じribbon.pyを用いる）。
+
+        画面の操作ボタンはすべてここに集約し、入力ファイル一覧・出力ファイル欄の隣には
+        ボタンを置かない。組は操作の流れに沿って「入力」「変換」「出力」の3つとする。
+        主要な操作（入力元・変換して出力）は大きいボタンとし、常時アクセント色の枠線で
+        強調する。各ボタンはマウスを重ねると説明書きを出す（tooltip.py）。
+        FAXサービスの変更・変換の既定設定は、従来どおりメニューバーの設定メニューに置く。
+        """
+        self._icons = IconSet(self)
+        self.ribbon = ribbon = Ribbon(self, self._icons)
+        ribbon.grid(row=0, column=0, sticky="we", padx=8, pady=(6, 2))
+
+        group = ribbon.group("入力")
+        self.input_button = group.large(
+            "入力元...", self._browse_input, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            tip="変換するPDFファイルを選びます。"
+                "複数選べ、すでに選んでいる場合は一覧の末尾に追加します"
+                "（一覧の上から順に結合して、1送信分の1ファイルにします）。"
+                "一覧へのドラッグ＆ドロップでも追加できます。"
+                "入力したファイル自体は変更しません。")
+
+        group = ribbon.group("変換")
+        self.convert_button = group.large(
+            "変換して出力", self._on_convert, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            state="disabled", tip=self._convert_button_tip)
+
+        group = ribbon.group("出力")
+        self.output_button = group.small(
+            "出力先...", self._browse_output,
+            tip="出力するPDFファイルの保存先フォルダとファイル名を指定します。"
+                "ここでの変更は、この変換のかぎりです"
+                "（次にファイルを選び直すと、変換の既定設定の方針から決め直します）。")
+        self.open_folder_button = group.small(
+            "出力フォルダを開く", self._open_output_folder, state="disabled",
+            tip="変換したPDFファイルの入っているフォルダを開きます。"
+                "変換が終わると押せるようになります。")
+
+    def _convert_button_tip(self) -> str:
+        """「変換して出力」ボタンの説明書き（押せないときは、その理由を示す）。"""
+        if str(self.convert_button.cget("state")) == "disabled":
+            return ("入力ファイルを選ぶと押せるようになります。"
+                    "選択中の処理内容でPDFを画像化し、出力ファイルに保存します。")
+        return ("選択中の処理内容でPDFを画像化し、出力ファイルに保存します。"
+                "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
 
     def _build_options(self, parent: tk.Misc) -> None:
         # 選択肢の数が少ない項目から順に並べる：圧縮方式→容量超過→用紙正規化→変換レポート。
@@ -1568,8 +1720,9 @@ class VaFaxApp(TkinterDnD.Tk):
             self.logger.info("診断エラー：%s", exc)
             self._message_queue.put({"type": "diagnosis_error", "token": token, "message": str(exc)})
             return
-        except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログにのみ記録
+        except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログと診断情報にのみ記録
             self.logger.error("診断中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
+            self._errors.record(exc, "事前診断")
             self._message_queue.put({
                 "type": "diagnosis_error", "token": token,
                 "message": f"ファイルの診断中に問題が発生しました。\n{CONTACT_NOTICE}",
@@ -1902,8 +2055,9 @@ class VaFaxApp(TkinterDnD.Tk):
         except convert_module.ConversionError as exc:
             self.logger.info("変換エラー：%s", exc)
             self._message_queue.put({"type": "error", "message": str(exc)})
-        except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログにのみ記録
+        except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログと診断情報にのみ記録
             self.logger.error("変換中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
+            self._errors.record(exc, "変換")
             self._message_queue.put({
                 "type": "error",
                 "message": f"変換中に問題が発生しました。\n{CONTACT_NOTICE}",
