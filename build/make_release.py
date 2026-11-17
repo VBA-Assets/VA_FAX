@@ -3,14 +3,15 @@
 
 前提: dist/VA_FAX.exe がビルド済みであること（build/motfax.spec参照）。
 実行方法（リポジトリルートで）: python build/make_release.py
-出力: dist/VA_FAX_v130.zip
+出力: dist/VA_FAX_v200.zip
 
 zipの構成:
-    VA_FAX_v130/
+    VA_FAX_v200/
         VA_FAX.exe                          … 本体（これだけで動作する）
         README.md                           … 利用者向け説明（VBAアセット掲載文と同一）
-        VA_FAX_操作マニュアル_Ver130.pdf     … 操作マニュアル
+        VA_FAX_操作マニュアル_Ver200.pdf     … 操作マニュアル
         LICENSE.txt                         … MITライセンス（オープンソース）
+        THIRD_PARTY_NOTICES.txt             … 使っている部品のライセンスの表示（N-08）
         source/                             … ソースコード一式（gitで管理している全ファイル。
                                               ただしCLAUDE.md等の開発プロセス用ファイルは除く）
 
@@ -25,7 +26,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-VERSION = "v130"
+VERSION = "v200"
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
 EXE = DIST / "VA_FAX.exe"
@@ -51,11 +52,13 @@ def main() -> None:
 
     DIST.mkdir(exist_ok=True)
     with zipfile.ZipFile(OUTPUT, "w", zipfile.ZIP_DEFLATED) as zf:
-        manual_name = "VA_FAX_操作マニュアル_Ver130.pdf"
+        manual_name = "VA_FAX_操作マニュアル_Ver200.pdf"
         zf.write(EXE, f"{TOP}/VA_FAX.exe")
         zf.write(ROOT / "README.md", f"{TOP}/README.md")
         zf.write(ROOT / "docs" / manual_name, f"{TOP}/{manual_name}")
         zf.write(ROOT / "LICENSE", f"{TOP}/LICENSE.txt")
+        # 使っている部品のライセンスの表示（N-08。build/make_notices.py で作る）
+        zf.write(ROOT / "THIRD_PARTY_NOTICES.txt", f"{TOP}/THIRD_PARTY_NOTICES.txt")
         for rel in tracked_files():
             zf.write(ROOT / rel, f"{TOP}/source/{rel}")
 

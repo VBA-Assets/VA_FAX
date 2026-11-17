@@ -34,7 +34,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # 使っていない部品は入れない（N-08。Pillow・pypdf・pypdfium2 が、あれば使う、という形で
+    # 読み込もうとするもの。主な処理を一通り動かして、読み込まれないことを確かめた〔2026-11-17〕）。
+    # exe を小さくし、THIRD_PARTY_NOTICES.txt の表示と中身を一致させるため。
+    excludes=["numpy", "lxml", "bs4", "soupsieve", "charset_normalizer", "img2pdf", "pikepdf"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

@@ -42,10 +42,11 @@ def test_every_button_icon_has_images():
 
 def test_icon_name_ignores_ellipsis():
     """ボタンの文字から引く（末尾の「...」や改行は無視する）。"""
-    assert icon_name("入力元...") == "document_add"
-    assert icon_name("変換して出力") == "image"
-    assert icon_name("出力先...") == "save"
-    assert icon_name("出力フォルダを開く") == "folder_open"
+    assert icon_name("開く...") == "folder_open"
+    assert icon_name("保存") == "save"
+    assert icon_name("名前を付けて保存…") == "save"
+    assert icon_name("追加") == "document_add"
+    assert icon_name("回転") == "arrow_rotate"
     assert icon_name("存在しないボタン") is None
 
 
@@ -54,20 +55,20 @@ def test_ribbon_groups_and_buttons(root):
     icons = IconSet(root)
     ribbon = Ribbon(root, icons)
     ribbon.pack(fill="x")
-    g_in = ribbon.group("入力")
-    big = g_in.large("入力元...", lambda: None, style=theme.RIBBON_ACCENT_BUTTON_STYLE)
-    g_out = ribbon.group("出力")
-    small = g_out.small("出力フォルダを開く", lambda: None)
+    g_in = ribbon.group("ファイル")
+    big = g_in.large("開く", lambda: None, style=theme.RIBBON_ACCENT_BUTTON_STYLE)
+    g_out = ribbon.group("ページ")
+    small = g_out.small("削除", lambda: None)
     root.update()
 
     assert str(big.cget("compound")) == "top"
     assert str(small.cget("compound")) == "left"
     assert big.cget("image") and small.cget("image")
-    # ボタンはTabで止まらない（入力ファイル一覧のキー操作を妨げないため）。
+    # ボタンはTabで止まらない（ページの一覧のキー操作を妨げないため）。
     assert str(big.cget("takefocus")) in ("0", "False")
     small.configure(state="disabled")  # 押せないときは灰色のアイコンになる
     assert "disabled" in str(small.cget("image"))
-    assert [g.title for g in ribbon.groups] == ["入力", "出力"]
+    assert [g.title for g in ribbon.groups] == ["ファイル", "ページ"]
 
     # 幅が足りないときは、入りきらない組を次の段に送る（update()を挟むと、
     # 画面に出していないウィンドウでは幅1のConfigureで1段に戻るため、直後に確かめる）。
@@ -79,13 +80,13 @@ def test_ribbon_groups_and_buttons(root):
 
 def test_tooltips(root):
     """マウスを重ねたときの説明書き。説明は文字列か、いまの説明を返す関数。"""
-    button = ttk.Button(root, text="変換して出力")
+    button = ttk.Button(root, text="保存")
     button.pack()
     state = {"ready": False}
-    tip = Tooltip(button, lambda: "変換します" if state["ready"] else "入力ファイルを選んでください")
-    assert tip.current_text() == "入力ファイルを選んでください"
+    tip = Tooltip(button, lambda: "保存します" if state["ready"] else "ファイルを開いてください")
+    assert tip.current_text() == "ファイルを開いてください"
     state["ready"] = True
-    assert tip.current_text() == "変換します"  # 押せる・押せないで説明が変わる
+    assert tip.current_text() == "保存します"  # 押せる・押せないで説明が変わる
     assert _by_sentence("一つ。二つ。") == "一つ。\n二つ。"  # 文ごとに改行する
     assert Tooltip(ttk.Button(root), "").current_text() == ""  # 空の説明は出さない
     button.destroy()
@@ -94,7 +95,7 @@ def test_tooltips(root):
 def test_ribbon_styles(root):
     """リボンのボタンは、ふだんは枠も地もなく、重ねたときだけ淡い青。
 
-    主要な操作（入力元・変換して出力）は、いつもアクセント色の枠を出す。
+    主要な操作（開く・保存）は、いつもアクセント色の枠を出す。
     """
     style = ttk.Style(root)
     assert style.lookup(theme.RIBBON_BUTTON_STYLE, "background") == theme.COLOR_BG

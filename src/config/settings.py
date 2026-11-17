@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """アプリケーション設定の永続化と変換の既定設定（F-23・F-26）。
 
-保存内容はフォルダパス・選択中プロファイル・変換の既定設定等のUI状態のみとし、
+保存内容はフォルダパス・選択中プロファイル・変換の既定設定・ウィンドウの大きさ等のUI状態のみとし、
 文書に関する情報は一切含めない（N-06）。外部への送信は行わない（N-01）。
 settings.json は手動編集にも耐える平易な構造とし、事務所内の複数PCへ
 コピーすることでプロファイルと既定設定を一括配布できる（F-23・F-28）。
@@ -10,40 +10,42 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-SETTINGS_VERSION = 2
+# 3：Ver200。出力先・出力ファイル名の方針と、変換レポートの既定値をなくし（F-02・旧F-25）、
+#    ウィンドウの大きさ・位置を足した（F-23）。古い項目が残っていても、読み飛ばす。
+SETTINGS_VERSION = 3
 
-OUTPUT_FOLDER_POLICIES = ("same_as_input", "fixed")
-OUTPUT_NAME_POLICIES = ("append_fax", "same_as_input")
-COMPRESSION_POLICIES = ("always_binarize", "always_grayscale")
+# "none"は「何もしない」（F-11・F-13。Ver200）
+COMPRESSION_POLICIES = ("always_binarize", "always_grayscale", "none")
 DITHER_METHODS = ("auto", "threshold", "diffusion")
 JPEG_QUALITY_LEVELS = ("high", "medium", "low")
 SIZE_REDUCTION_STRATEGIES = ("culprit_only", "uniform")
-CAPACITY_EXCEEDED_METHODS = ("reduce_resolution", "split")
+CAPACITY_EXCEEDED_METHODS = ("reduce_resolution", "split", "none")
 
+# ［名前を付けて保存］・［コピーして開く］のファイル名に付ける文字の初期値と、使えない文字（F-35）
+DEFAULT_NAME_SUFFIX = "_fax"
+NAME_SUFFIX_MAX_LENGTH = 20
+_NAME_SUFFIX_FORBIDDEN = set('\\/:*?"<>|')
 
-class OutputPathError(Exception):
-    """出力パスの検証エラー（F-02。利用者向けの平易な日本語メッセージを保持する）。"""
+# ウィンドウの大きさ・位置（Tkのgeometryの形：幅x高さ±左±上）
+_GEOMETRY_PATTERN = re.compile(r"^\d{2,5}x\d{2,5}[+-]-?\d{1,5}[+-]-?\d{1,5}$")
 
 
 @dataclass
 class ConversionDefaults:
     """変換の既定設定（F-26）。"""
 
-    output_folder_policy: str = "same_as_input"
-    fixed_output_folder: Optional[str] = None
-    output_name_policy: str = "append_fax"
     compression_policy: str = "always_binarize"
     normalize_enabled: bool = True
     dither_method: str = "auto"
     jpeg_quality_level: str = "medium"
     capacity_exceeded_method: str = "reduce_resolution"
     size_reduction_strategy: str = "culprit_only"
-    report_enabled: bool = False
 
 
 @dataclass
@@ -53,6 +55,15 @@ class Settings:
     last_input_dir: Optional[str] = None
     profile_id: Optional[str] = None
     first_run_completed: bool = False
+    # ウィンドウの大きさ・位置（最大化していないときのもの）と、最大化していたか（F-23。Ver200）
+    window_geometry: Optional[str] = None
+    window_maximized: bool = False
+    # ［名前を付けて保存］・［コピーして開く］のファイル名の初めの値に、文字を付けるか・付ける文字
+    # （［ファイル］→［オプション］。F-35）
+    append_fax_to_save_name: bool = True
+    save_name_suffix: str = DEFAULT_NAME_SUFFIX
+    # 保存の後に、保存したフォルダを開くか（［ファイル］→［オプション］。F-35）
+    open_folder_after_save: bool = False
     defaults: ConversionDefaults = field(default_factory=ConversionDefaults)
 
 
@@ -88,19 +99,10 @@ def _defaults_from_dict(raw: Any) -> ConversionDefaults:
     if not isinstance(raw, dict):
         return ConversionDefaults()
 
+    # Ver130 までの出力先・出力ファイル名の方針、変換レポートの既定値が残っていても、
+    # 読み飛ばす（エラーにしない。F-26）。
     base = ConversionDefaults()
-    folder_policy = _choice(raw, "output_folder_policy", OUTPUT_FOLDER_POLICIES,
-                             base.output_folder_policy)
-    name_policy = _choice(raw, "output_name_policy", OUTPUT_NAME_POLICIES, base.output_name_policy)
-    # 「入力と同じフォルダ×入力ファイル名と同一」は入力上書きとなるため許容しない（F-02・F-03）
-    if folder_policy == "same_as_input" and name_policy == "same_as_input":
-        name_policy = "append_fax"
-
-    fixed = raw.get("fixed_output_folder")
     return ConversionDefaults(
-        output_folder_policy=folder_policy,
-        fixed_output_folder=str(fixed) if fixed else None,
-        output_name_policy=name_policy,
         compression_policy=_choice(raw, "compression_policy", COMPRESSION_POLICIES,
                                     base.compression_policy),
         normalize_enabled=bool(raw.get("normalize_enabled", base.normalize_enabled)),
@@ -111,8 +113,27 @@ def _defaults_from_dict(raw: Any) -> ConversionDefaults:
                                           base.capacity_exceeded_method),
         size_reduction_strategy=_choice(raw, "size_reduction_strategy", SIZE_REDUCTION_STRATEGIES,
                                          base.size_reduction_strategy),
-        report_enabled=bool(raw.get("report_enabled", base.report_enabled)),
     )
+
+
+def valid_name_suffix(value: Any) -> Optional[str]:
+    """ファイル名に付ける文字として使えるなら、前後の空白を除いて返す（使えなければNone）。
+
+    空・長すぎる・ファイル名に使えない文字（\\ / : * ? " < > |）や制御文字を含むものは使えない。
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > NAME_SUFFIX_MAX_LENGTH:
+        return None
+    if any(ch in _NAME_SUFFIX_FORBIDDEN or ord(ch) < 32 for ch in text):
+        return None
+    return text
+
+
+def valid_geometry(value: Any) -> Optional[str]:
+    """ウィンドウの大きさ・位置の文字列として使えるものなら、そのまま返す（使えなければNone）。"""
+    return value if isinstance(value, str) and _GEOMETRY_PATTERN.match(value) else None
 
 
 def load_settings() -> Settings:
@@ -135,6 +156,11 @@ def load_settings() -> Settings:
         last_input_dir=raw.get("last_input_dir") or str(default_documents_dir()),
         profile_id=raw.get("profile_id"),
         first_run_completed=bool(raw.get("first_run_completed", False)),
+        window_geometry=valid_geometry(raw.get("window_geometry")),
+        window_maximized=bool(raw.get("window_maximized", False)),
+        append_fax_to_save_name=bool(raw.get("append_fax_to_save_name", True)),
+        save_name_suffix=valid_name_suffix(raw.get("save_name_suffix")) or DEFAULT_NAME_SUFFIX,
+        open_folder_after_save=bool(raw.get("open_folder_after_save", False)),
         defaults=_defaults_from_dict(raw.get("defaults")),
     )
 
@@ -145,39 +171,3 @@ def save_settings(settings: Settings) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": SETTINGS_VERSION, **asdict(settings)}
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def compute_default_output_path(input_path: Path, defaults: ConversionDefaults) -> Path:
-    """既定設定の出力先方針・ファイル名方針から出力ファイルパスの初期値を求める（F-02）。"""
-    if defaults.output_folder_policy == "fixed" and defaults.fixed_output_folder:
-        folder = Path(defaults.fixed_output_folder)
-    else:
-        folder = input_path.parent
-
-    if defaults.output_name_policy == "same_as_input":
-        name = input_path.name
-    else:
-        name = f"{input_path.stem}_fax.pdf"
-
-    return folder / name
-
-
-def validate_output_path(input_path: Path, output_path: Path) -> None:
-    """出力パスを検証する（F-02）。問題がある場合はOutputPathErrorを送出する。
-
-    - 出力パスが入力パスと一致する場合（入力上書き＝F-03違反）はエラー。
-    - 出力先フォルダが存在しない場合（固定フォルダの共有未接続等）はエラー。
-      フォールバック出力は行わない（機密文書が意図しない場所に出力されることを防ぐ）。
-    """
-    same = os.path.normcase(os.path.abspath(str(input_path))) == \
-        os.path.normcase(os.path.abspath(str(output_path)))
-    if same:
-        raise OutputPathError(
-            "出力先が入力ファイルと同じです。入力ファイルは上書きできないため、"
-            "出力ファイル名または出力先フォルダを変更してください。"
-        )
-    if not output_path.parent.is_dir():
-        raise OutputPathError(
-            "出力先のフォルダが見つかりません。出力先の指定、または設定メニューの"
-            "「変換の既定設定」をご確認ください。"
-        )

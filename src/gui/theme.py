@@ -58,6 +58,7 @@ RIBBON_GROUP_LABEL_STYLE = "RibbonGroup.TLabel"
 RIBBON_NOTE_LABEL_STYLE = "RibbonNote.TLabel"
 RIBBON_BUTTON_STYLE = "Ribbon.TButton"
 RIBBON_LARGE_BUTTON_STYLE = "RibbonLarge.TButton"
+RIBBON_MENUBUTTON_STYLE = "Ribbon.TMenubutton"
 RIBBON_ACCENT_BUTTON_STYLE = "RibbonAccent.TButton"
 
 # 同梱カーソル（trash.cur）を読み込めない環境で使う代替カーソル
@@ -176,7 +177,7 @@ def _fallback_remove_cursor(widget: tk.Misc) -> str:
 def create_button(parent: tk.Misc, accent: bool = False, **kwargs) -> ttk.Button:
     """ボタンを作成する（ttk.Button）。
 
-    accent=Trueの場合（変換して出力・決定・保存等の主要な操作ボタン）は、
+    accent=Trueの場合（決定・保存等の主要な操作ボタン）は、
     枠線をアクセント色にしたスタイルを適用し、他のボタンと区別する
     （地色を塗りつぶす方式にはしない）。地色・ホバー・押下時の色変化は
     apply_flat_theme()で設定したttk.Styleにより自動的に反映される。
@@ -254,7 +255,7 @@ def apply_flat_theme(root: tk.Misc) -> None:
         darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
     )
 
-    # 主要な操作ボタン（変換して出力・決定・保存）：地色は他のボタンと同じ
+    # 主要な操作ボタン（決定・保存）：地色は他のボタンと同じ
     # ニュートラルな色のまま、枠線だけを常時アクセント色にして強調する
     # （常時アクセント色で塗りつぶす方式にはしない）。
     style.configure(
@@ -297,8 +298,19 @@ def apply_flat_theme(root: tk.Misc) -> None:
             padding=_padding, width=0, anchor=_anchor, justify="center", relief="raised",
         )
         style.map(_name, **_ribbon_states)
+    # 押すとメニューが開くボタン（リボンの［回転］。Wordの［回転］と同じ）：小さいボタンと
+    # 同じ見た目に、右に小さな下向きの三角を付ける。
+    style.configure(
+        RIBBON_MENUBUTTON_STYLE,
+        background=COLOR_BG, foreground=COLOR_TEXT, bordercolor=COLOR_BG,
+        lightcolor=COLOR_BG, darkcolor=COLOR_BG,
+        padding=(3, 1), width=0, anchor="w", relief="raised",
+        arrowcolor=COLOR_TEXT, arrowsize=6,
+    )
+    style.map(RIBBON_MENUBUTTON_STYLE, arrowcolor=[("disabled", COLOR_DISABLED_TEXT)],
+              **_ribbon_states)
 
-    # リボンの主要な操作（入力元・変換して出力の大きいボタン）：見落とされないよう、
+    # リボンの主要な操作（開く・保存の大きいボタン）：見落とされないよう、
     # ほかのリボンのボタンと違って、いつも地色と青い枠を出す（主要な操作ボタンは
     # 枠線の色をアクセント色にする、という方針に合わせる）。
     style.configure(

@@ -35,10 +35,17 @@ LARGE_ICON = 32  # 大きいボタンのアイコンの大きさ
 
 # ボタンの文字（改行・「…」・「...」を除く）→ アイコンの名前（icons/<名前>.png）
 BUTTON_ICONS = {
-    "入力元": "document_add",
-    "変換して出力": "image",
-    "出力先": "save",
-    "出力フォルダを開く": "folder_open",
+    # 「ファイル」の組（F-32）
+    "開く": "folder_open",
+    "コピーして開く": "folder_open",
+    "保存": "save",
+    "名前を付けて保存": "save",
+    # 「ページ」の組（F-33。回転・元に戻す・やり直すは、VA mintsと同じ自作のアイコン）
+    "追加": "document_add",
+    "削除": "delete",
+    "回転": "arrow_rotate",
+    "元に戻す": "arrow_undo",
+    "やり直す": "arrow_redo",
 }
 
 

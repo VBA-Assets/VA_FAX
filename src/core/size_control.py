@@ -12,8 +12,12 @@
 """
 from __future__ import annotations
 
+import io
+
 from dataclasses import dataclass, replace
 from typing import Callable, Literal, NoReturn, Optional
+
+import pypdf
 
 from config.profiles import Profile
 from core import convert
@@ -21,7 +25,7 @@ from core.convert import ConversionResult, ConvertOptions, PageConversionLog
 
 RetryCallback = Callable[[int, int, int, int, Optional[int]], None]
 ReductionStrategy = Literal["culprit_only", "uniform"]
-CapacityExceededMethod = Literal["reduce_resolution", "split"]
+CapacityExceededMethod = Literal["reduce_resolution", "split", "none"]
 
 
 class SizeLimitExceededError(Exception):
@@ -161,7 +165,7 @@ def _raise_size_limit_exceeded(profile: Profile, options: ConvertOptions,
     raise SizeLimitExceededError(
         f"すべてのページを最小設定まで縮小しても、{profile.display_name}の容量上限"
         f"（{limit_text}）を下回りませんでした。"
-        f"ファイルを分割するなどの対応をご検討ください。{suggestions}"
+        f"容量超過時の処理方式を「分割して再実行」にするなどの対応をご検討ください。{suggestions}"
     )
 
 
@@ -313,3 +317,54 @@ def split_by_capacity(pdf_bytes: bytes, profile: Profile, options: ConvertOption
                 page_logs=tuple(page_logs[i] for i in indices))
         for indices in parts
     ]
+
+
+def split_pages_as_is(pdf_bytes: bytes, profile: Profile) -> list[tuple[bytes, int]]:
+    """ページを画像にせず、そのままの形で、容量上限に収まる単位に分ける
+    （圧縮方式「何もしない」×容量超過時「分割して再実行」。F-11・F-13）。
+
+    戻り値は (PDF, ページ数) の並び。全体が上限以下なら、pdf_bytesをそのまま1件で返す。
+    ページの順序は保つ。各ファイルの大きさは、実際に組み立てたPDFのバイト数で判定する
+    （フォント等をページの間で共有しているPDFでは、ページごとの大きさの合計にならないため）。
+    1ページ単体で上限を超えるときは、画質を変えない以上は収められないので、
+    SizeLimitExceededErrorを送出する。
+    """
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    page_count = len(reader.pages)
+    limit = profile.max_file_size_bytes
+    if len(pdf_bytes) <= limit:
+        return [(pdf_bytes, page_count)]
+
+    def build(indices: list[int]) -> bytes:
+        writer = pypdf.PdfWriter()
+        for i in indices:
+            writer.add_page(reader.pages[i])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
+    parts: list[tuple[bytes, int]] = []
+    current: list[int] = []
+    current_pdf = b""
+    for i in range(page_count):
+        candidate = build(current + [i])
+        if len(candidate) <= limit:
+            current, current_pdf = current + [i], candidate
+            continue
+        if not current:
+            raise SizeLimitExceededError(
+                f"{i + 1}ページ目は、このページ単独で{profile.display_name}の容量上限"
+                f"（{format_bytes_as_size(limit)}）を超えています。圧縮方式が「何もしない」のときは、"
+                "ページの大きさを変えられません。圧縮方式を「二値化」又は「グレースケール」に"
+                "すると、収まる場合があります。")
+        parts.append((current_pdf, len(current)))
+        single = build([i])
+        if len(single) > limit:
+            raise SizeLimitExceededError(
+                f"{i + 1}ページ目は、このページ単独で{profile.display_name}の容量上限"
+                f"（{format_bytes_as_size(limit)}）を超えています。圧縮方式が「何もしない」のときは、"
+                "ページの大きさを変えられません。圧縮方式を「二値化」又は「グレースケール」に"
+                "すると、収まる場合があります。")
+        current, current_pdf = [i], single
+    parts.append((current_pdf, len(current)))
+    return parts

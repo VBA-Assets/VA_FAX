@@ -1,0 +1,5 @@
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- 「回転」のアイコン。VA mints 用に自作（Fluent UI System Icons の線の太さに合わせた。右回りの矢印） -->
+<path d="M5.76 15.24A6 6 0 1 1 15.64 8.95" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16.4 5.6L15.7 9L12.4 8.2" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,5 @@
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- 「やり直す」のアイコン。VA mints 用に自作（arrow_undo.svg を左右反転したもの） -->
+<path d="M12.8 4L16.5 7.7L12.8 11.4" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M16 7.7H8.4C5.7 7.7 3.5 9.8 3.5 12.4C3.5 15 5.7 17 8.4 17H11.5" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

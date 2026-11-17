@@ -1,0 +1,5 @@
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+<!-- 「更新前に戻す」のアイコン。VA mints 用に自作（Fluent UI System Icons の線の太さに合わせた） -->
+<path d="M7.2 4L3.5 7.7L7.2 11.4" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M4 7.7H11.6C14.3 7.7 16.5 9.8 16.5 12.4C16.5 15 14.3 17 11.6 17H8.5" stroke="#212121" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

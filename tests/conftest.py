@@ -2,6 +2,7 @@
 """pytest共通フィクスチャ。src/ をインポートパスに追加し、プロファイル・サンプル読込を提供する。"""
 from __future__ import annotations
 
+import gc
 import sys
 from pathlib import Path
 
@@ -14,6 +15,19 @@ if str(SRC_DIR) not in sys.path:
 SAMPLES_DIR = Path(__file__).resolve().parent.parent / "samples"
 
 from config.profiles import get_profile  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _collect_tk_garbage_in_main_thread():
+    """閉じたウィンドウの部品（Tkの変数・画像）を、テストの前後に、このスレッドで片づける。
+
+    閉じたウィンドウの部品が、後のテストの裏のスレッド（事前診断・保存・プレビューの描画）で
+    ガベージコレクションにかかると、Tclが「別のスレッドからの解放」として異常終了する
+    （Windows fatal exception: code 0x80000003）。画面を作るテストの前後で先に片づけておく。
+    """
+    gc.collect()
+    yield
+    gc.collect()
 
 
 @pytest.fixture(scope="session")

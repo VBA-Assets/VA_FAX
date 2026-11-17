@@ -2,6 +2,7 @@
 """VA FAX エントリポイント。"""
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import tkinter as tk
@@ -23,20 +24,37 @@ def _run_smoke_test(spec: str) -> int:
 
     環境変数 VA_FAX_SMOKE_TEST="入力PDFパス;出力PDFパス" が設定されている場合のみ
     実行される。ウィンドウは表示せず（withdraw）、同梱プロファイルの読込・
-    変換エンジン一式（pypdfium2・Pillow・img2pdf）・tkinter／tkinterdnd2の
+    文書・変換・保存のエンジン一式（pypdfium2・Pillow・pypdf）・tkinter／tkinterdnd2の
     ネイティブ部品・リボンのアイコン（F-15）がexeに正しく同梱されていることを
     終了コードで報告する
     （windowed exeでは標準出力が使えないため、成否は終了コードと出力ファイルで確認する）。
     """
     input_str, output_str = spec.split(";", 1)
 
+    import io
+
+    from PIL import Image
+
     from core import convert as convert_module
+    from core import document as document_module
+    from core import saving as saving_module
 
     profiles = load_all_profiles()
     profile = profiles["motfax"]
-    data = Path(input_str).read_bytes()
-    result = convert_module.convert(data, profile, convert_module.ConvertOptions(mode="binarize"))
-    Path(output_str).write_bytes(result.build_pdf())
+    paper = (profile.normalize_target.width_mm, profile.normalize_target.height_mm)
+    # 文書（ページの表）・画像の取り込み・ページの編集・保存（F-01・F-02・F-33・F-34）を通す
+    document = document_module.Document()
+    document.add_source(document_module.load_source(Path(input_str).read_bytes(), paper))
+    image = io.BytesIO()
+    Image.new("RGB", (600, 400), "white").save(image, format="PNG")
+    document.add_source(document_module.load_source(image.getvalue(), paper), at=0)
+    document.rotate([0], 90)
+    from core import diagnose as diagnose_module
+
+    diagnose_module.diagnose(document.assemble(), profile)
+    saving_module.save_document(
+        document.assemble(), Path(output_str), profile,
+        convert_module.ConvertOptions(mode="binarize"), "reduce_resolution", "culprit_only", [])
 
     from tkinterdnd2 import TkinterDnD
 
@@ -50,8 +68,8 @@ def _run_smoke_test(spec: str) -> int:
 
     icons = IconSet(root)
     ribbon = Ribbon(root, icons)
-    group = ribbon.group("入力")
-    group.large("入力元...", lambda: None)
+    group = ribbon.group("ファイル")
+    group.large("開く", lambda: None)
     for name in sorted(set(BUTTON_ICONS.values())):
         for large in (False, True):
             if icons.image(name, large=large) is None or icons.image(name, disabled=True) is None:
@@ -77,6 +95,11 @@ def _select_initial_profile(settings: Settings) -> Optional[str]:
     root.wait_window(dialog)
     profile_id = dialog.result_profile_id
     root.destroy()
+    # 閉じたウィンドウの部品（Tkの変数等）を、ここ（画面のスレッド）で片づけておく。残したままに
+    # すると、この後のメイン画面の裏のスレッド（事前診断・保存）でガベージコレクションにかかり、
+    # Tclが「別のスレッドからの解放」として異常終了することがある。
+    del dialog, root
+    gc.collect()
     return profile_id
 
 

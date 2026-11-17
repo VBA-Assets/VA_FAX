@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -118,24 +117,19 @@ def test_mac_icon_uses_iconphoto(mac_app):
     assert photo.width() > 0 and photo.height() > 0
 
 
-def test_mac_command_key_selects_all_input_lines(mac_app):
-    """入力ファイル欄で⌘A（Command＝Mod1＝0x8）がCtrl+Aと同じく全行を選ぶ。"""
-    assert mac_app._shortcut_state_mask & 0x4
-    assert mac_app._shortcut_state_mask & 0x8
-    mac_app.input_paths = [Path("a.pdf"), Path("b.pdf"), Path("c.pdf")]
-    mac_app._refresh_input_text()
-    mac_app._set_input_selection(None)
-    event = SimpleNamespace(keysym="a", state=0x8, widget=mac_app.input_text)
-    assert mac_app._on_input_text_key(event) == "break"
-    assert mac_app._selected_input_lines() == (1, 3)
-    mac_app.input_paths = []
-    mac_app._refresh_input_text()
+def test_mac_command_a_selects_all_pages(mac_app):
+    """ページの一覧（サムネイル）で、⌘AがCtrl+Aと同じく全ページを選ぶ。"""
+    canvas = mac_app.preview_pane._canvas
+    assert canvas.bind("<Command-a>") and canvas.bind("<Control-a>")
 
 
-def test_mac_command_z_and_quit_are_bound(mac_app):
-    """⌘Zは全体の取り消しに、⌘Q（::tk::mac::Quit）はウィンドウの破棄につながる。"""
-    for sequence in ("<Command-z>", "<Command-Z>", "<Control-z>", "<Control-Z>"):
-        assert mac_app.bind_all(sequence)
+def test_mac_command_keys_and_quit_are_bound(mac_app):
+    """⌘Z・⌘Y・⌘O・⌘S・⌘⇧Sは、Ctrlと同じ働きに、⌘Q（::tk::mac::Quit）は、閉じるボタンと
+    同じ処理（未保存の確認）につながる。"""
+    for sequence in ("<Command-z>", "<Command-Z>", "<Control-z>", "<Control-Z>", "<Command-y>",
+                     "<Command-o>", "<Command-s>", "<Command-Shift-S>", "<Control-s>",
+                     "<Control-Shift-S>"):
+        assert mac_app.bind_all(sequence), sequence
     assert mac_app.tk.call("info", "commands", "::tk::mac::Quit")
 
 

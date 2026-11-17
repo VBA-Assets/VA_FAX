@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Wordのリボンと同じ形のボタンの並び（VA mints・VA Case・VA Documentのribbon.pyと同じ形。F-15）。
 
-・ボタンを組（入力・変換・出力）に分け、組の名前をボタンの下に小さく表示する。組と組の間は縦線で区切る。
+・ボタンを組（ファイル・ページ）に分け、組の名前をボタンの下に小さく表示する。組と組の間は縦線で区切る。
 ・主要なボタンは大きいアイコンの下に文字（large）、ほかは小さいアイコンの右に文字を縦に3つまで積む（small）。
 ・ボタンは、ふだんは枠も地もなく、マウスを重ねたときだけ淡い青の地と枠を出す（Wordのリボンと同じ。
-  スタイルはtheme.pyのRibbon*）。主要な操作（入力元・変換して出力）だけは、いつも枠を出す
+  スタイルはtheme.pyのRibbon*）。主要な操作（開く・保存）だけは、いつも枠を出す
   （theme.pyのRibbonAccent）。
 ・組の名前は、どの組も下端にそろえる。
 ・ボタンはTabで止まらない（ttkのボタンは押すと入力先を取るため、takefocusを切る。入力ファイル一覧の
@@ -84,6 +84,32 @@ class RibbonGroup(ttk.Frame):
         button.grid(row=self._stack, column=self._column, sticky="w", padx=1, pady=0)
         self._stack += 1
         return button
+
+    def dropdown(self, text: str, items: list[tuple[str, object]], icon: Optional[str] = None,
+                 tip: Optional[TooltipText] = None, **kwargs) -> ttk.Menubutton:
+        """小さいボタンの形の、押すとメニューが開くボタン（Wordの［回転］と同じ）。
+
+        itemsは（メニューの文字, 実行する処理）の並び。置き方はsmallと同じ。
+        """
+        button = ttk.Menubutton(self.body, text=text, style=theme.RIBBON_MENUBUTTON_STYLE,
+                                takefocus=False, direction="below",
+                                **self._images(text, icon, False), **kwargs)
+        menu = tk.Menu(button, tearoff=False)
+        for label, command in items:
+            menu.add_command(label=label, command=command)
+        button.configure(menu=menu)
+        button.menu = menu  # type: ignore[attr-defined]
+        if tip:
+            button.tooltip = Tooltip(button, tip)  # type: ignore[attr-defined]
+        if self._stack >= ROWS:
+            self._next_column()
+        button.grid(row=self._stack, column=self._column, sticky="w", padx=1, pady=0)
+        self._stack += 1
+        return button
+
+    def new_column(self) -> None:
+        """次の小さいボタンを、新しい列の上から置く。"""
+        self._next_column()
 
     def block(self, widget: tk.Misc) -> tk.Misc:
         """部品（入力欄など）を、新しい列の上から置く。"""

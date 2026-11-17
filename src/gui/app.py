@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-"""VA FAX のtkinter GUI（F-15〜F-19・F-28）。
+"""VA FAX のtkinter GUI（F-15〜F-19・F-28・F-32・F-33）。
 
-本モジュールはエンジン（core.diagnose / core.convert / core.size_control）を呼び出すのみで、
-変換ロジック自体は持たない（GUIとエンジンの分離）。
+本モジュールはエンジン（core.document / core.diagnose / core.saving 等）を呼び出すのみで、
+変換・保存のロジック自体は持たない（GUIとエンジンの分離）。
+
+Ver200 で、通常のPDF編集アプリと同じ形にした：ファイルを開く・コピーして開く・保存・
+名前を付けて保存（F-32）と、サムネイルでのページの編集（追加・削除・並べ替え・回転、
+元に戻す・やり直す。F-33）。文書の中身は core.document.Document（ページの表）が持つ。
+開いた・追加した・保存したファイルの名前と場所は、この画面がメモリ内にだけ持ち、
+設定ファイル・ログ・診断情報には書かない（N-06・F-24・F-31）。
 """
 from __future__ import annotations
 
@@ -18,23 +24,19 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Optional
+from typing import Callable, Iterable, Optional
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from config.profiles import PageSize, Profile, ProfileError, load_all_profiles, save_custom_profile
-from config.settings import (
-    ConversionDefaults,
-    OutputPathError,
-    Settings,
-    compute_default_output_path,
-    save_settings,
-    validate_output_path,
-)
+from config.settings import (NAME_SUFFIX_MAX_LENGTH, ConversionDefaults, Settings, save_settings,
+                             valid_name_suffix)
 from core import convert as convert_module
 from core import diagnose as diagnose_module
-from core import merge as merge_module
+from core import document as document_module
+from core import saving as saving_module
 from core import size_control as size_control_module
+from core.document import Document, Source, SourceError
 from core.size_control import format_bytes_as_size as _format_size
 import diagnostics
 from gui import theme
@@ -42,51 +44,38 @@ from gui.icons import IconSet
 from gui.preview import PreviewPane
 from gui.ribbon import Ribbon
 from logging_setup import setup_logger
-from report import ReportData, save_report
 from version import __version__
 
+APP_NAME = "VA FAX"
 CONTACT_NOTICE = "問題が解決しない場合は、VBAアセット（vba-assets.net）のお問い合わせ窓口までご連絡ください。"
 
-_INPUT_PLACEHOLDER_TEXT = (
-    "ここにファイルをドラッグ＆ドロップ、または「入力元」で選択\n"
-    "（複数可・上から順に結合。並べ替え・削除は行をクリックして選んでから）"
-)
-_PLACEHOLDER_COLOR = theme.COLOR_PLACEHOLDER
+# 一度の操作（ドロップ・ダイアログ選択）でこの件数を超えて追加する場合は確認を挟む
+# （フォルダ内の大量のファイルを誤ってまとめて落とした場合等の歯止め。件数のハード上限は
+# 設けない。サービス制約値ではないUI上の設計値のためプロファイル〔F-29〕の対象外）。
+CONFIRM_ADD_FILES_THRESHOLD = 10
 
-# 一度の操作（ドロップ・ダイアログ選択・貼り付け）でこの件数を超えて追加する場合は
-# 確認ダイアログを挟む（フォルダ内の大量PDFを誤ってまとめてドロップした場合等の
-# 歯止め。件数のハード上限は設けない。サービス制約値ではないUI上の設計値のため
-# プロファイル〔F-29〕の対象外）。
-CONFIRM_INPUT_FILES_THRESHOLD = 10
+# 開く・追加で選べるファイル（F-32・F-34）
+_OPEN_FILETYPES = [
+    ("PDF・画像（JPEG・PNG）", "*.pdf *.jpg *.jpeg *.png"),
+    ("PDFファイル", "*.pdf"),
+    ("画像（JPEG・PNG）", "*.jpg *.jpeg *.png"),
+]
+_PDF_FILETYPES = [("PDFファイル", "*.pdf")]
 
-# 入力ファイル一覧のCtrl+Zで遡れる履歴の最大数（メモリはパスのリストのみで軽微だが、
-# 無制限には伸ばさない）。
-INPUT_UNDO_LIMIT = 50
+# 処理内容の選択肢の文字（メイン画面と、変換の既定設定の画面で同じものを使う。F-26）
+_MODE_BINARIZE_TEXT = "二値化（白黒・G4圧縮）"
+_MODE_GRAYSCALE_TEXT = "グレースケール（JPEG圧縮）"
+_NOTHING_TEXT = "何もしない"
+_CAPACITY_REDUCE_TEXT = "解像度・品質を下げて再実行"
+_CAPACITY_SPLIT_TEXT = "分割して再実行"
+_NORMALIZE_TEXT = "用紙正規化（用紙サイズ・方向が対応外のページを自動で修正します）"
+_NONE_MODE_NOTE = "※ 圧縮方式が「何もしない」のときは、「解像度・品質を下げて再実行」と用紙正規化は効きません。"
 
-# 入力ファイル欄での行のドラッグによる並べ替え（F-15）の調整値。
-# 押下位置からこのピクセル数を超えて縦に動いた時点で「並べ替えのドラッグ」と判定する
-# （クリックのつもりの微小な動きで並べ替えが始まらないようにするため）。
-_INPUT_DRAG_THRESHOLD_PX = 3
-# 欄の上端・下端からこのピクセル数以内にポインタがある間は自動スクロールする
-# （欄は3行表示のため、表示外の位置へも移動できるようにする）。
-_INPUT_DRAG_EDGE_PX = 12
-_INPUT_DRAG_SCROLL_INTERVAL_MS = 100
-# 欄の縁からこのピクセル数を超えて外へ持ち出して放した場合は、その行を一覧から
-# 取り除く。縁ぎりぎりでの取りこぼし（末尾へ移動しようとして少しはみ出した場合等）を
-# 削除と誤判定しないための余裕であり、自動スクロールの反応域より広く取る。
-_INPUT_DRAG_OUTSIDE_MARGIN_PX = 16
+# 既定設定の圧縮方式（settings.json）→ 画面の圧縮方式
+_POLICY_TO_MODE = {"always_binarize": "binarize", "always_grayscale": "grayscale", "none": "none"}
 
-# 入力ファイル欄（tk.Text）で選択行を動かすキー。これ以外の文字キーは一切
-# 受け付けない（A-2：表示中の一覧と実際の変換対象の食い違い防止）。左右キーは
-# 行単位の一覧では意味を持たないため対象外とする。
-_INPUT_SELECTION_MOVE_KEYSYMS = frozenset({
-    "Up", "Down", "Home", "End", "Prior", "Next",
-})
-# キーイベントのevent.stateで修飾キーを表すビット。Ctrlはどの環境でも0x4。
-# MacのTk（aqua）ではCommand（⌘）がMod1（0x8）になる（WindowsのTkでは0x8は
-# NumLockを表すため、Mac以外では見ない）。
-_CONTROL_STATE_MASK = 0x4
-_MAC_COMMAND_STATE_MASK = 0x8
+# ページの回転（F-33）：メニューの文字と、時計回りの角度
+_ROTATIONS = [("左に90°回転", -90), ("右に90°回転", 90), ("180°回転", 180)]
 
 _QUALITY_LABELS = ["高", "中", "低"]
 _QUALITY_LEVEL_TO_INDEX = {"high": 0, "medium": 1, "low": 2}
@@ -118,25 +107,46 @@ def _parse_dropped_paths(data: str) -> list[str]:
     return [braced if braced else bare for braced, bare in _DND_PATH_PATTERN.findall(data)]
 
 
-def _move_input_paths(paths: list[Path], start: int, end: int,
-                      drop_index: int) -> tuple[list[Path], int]:
-    """一覧の[start, end]（0始まり・両端含む）をdrop_indexの位置へ移動する（F-15の並べ替え）。
-
-    drop_indexは「行と行の境界」を表し、0が先頭の前、len(paths)が末尾の後を指す
-    （移動前の一覧における位置で与える）。戻り値は並べ替え後の一覧と、その中での
-    移動した塊の先頭位置（移動後にその範囲を選択状態にするために使う）。
+def window_title(name: Optional[str], dirty: bool) -> str:
+    """ウィンドウの題名（F-15）。文書を開いていないときはツールの名前だけ、開いているときは
+    「（未保存の印）ファイルの名前 - VA FAX」。未保存の印は全角の「＊」、区切りは半角のハイフンと
+    その前後の半角の空白（VAプロジェクト共通の題名の書き方）。
     """
-    block = paths[start:end + 1]
-    rest = paths[:start] + paths[end + 1:]
-    # drop_indexより前から抜き取った件数だけ、挿入位置が手前にずれる。
-    if drop_index <= start:
-        removed_before = 0
-    elif drop_index > end:
-        removed_before = len(block)
-    else:
-        removed_before = drop_index - start
-    insert_at = drop_index - removed_before
-    return rest[:insert_at] + block + rest[insert_at:], insert_at
+    if not name:
+        return APP_NAME
+    return f"{'＊' if dirty else ''}{name} - {APP_NAME}"
+
+
+def fit_geometry_to_screen(geometry: Optional[str], screen_width: int, screen_height: int) -> Optional[str]:
+    """保存してあったウィンドウの大きさ・位置（幅x高さ±左±上）を、いまの画面で使える形にする（F-23）。
+
+    位置が画面の外になるとき（外付けの画面を外した等）は、大きさだけを返す（位置はOSに任せる）。
+    大きさが画面より大きいときは、画面に収める。使えない文字列はNone。
+    """
+    match = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", geometry or "")
+    if not match:
+        return None
+    width, height = min(int(match.group(1)), screen_width), min(int(match.group(2)), screen_height)
+    x_text, y_text = match.group(3), match.group(4)
+    if x_text.startswith("-") or y_text.startswith("-"):
+        return f"{width}x{height}"   # 右端・下端からの指定や負の位置は、位置を使わない
+    x, y = int(x_text), int(y_text)
+    # 題名の帯をつかめるだけの幅が、画面の中に残っていること
+    if x > screen_width - 120 or y > screen_height - 60:
+        return f"{width}x{height}"
+    return f"{width}x{height}+{x}+{y}"
+
+
+def suggested_save_name(base: Path, suffix: Optional[str]) -> str:
+    """［名前を付けて保存］・［コピーして開く］の名前の初めの値（F-32）。base は、開いたファイル
+    （保存した後は、保存したファイル）。suffix（初期値は「_fax」。［ファイル］→［オプション］で変える・
+    付けないにできる。F-35）を付ける。既に suffix で終わる名前（VA FAX で保存したファイルを開き直した
+    とき等）には、重ねて付けない。拡張子は .pdf にする（画像を開いたとき等）。
+    """
+    stem = base.stem
+    if suffix and not stem.lower().endswith(suffix.lower()):
+        stem += suffix
+    return f"{stem}.pdf"
 
 
 def _profile_constraint_text(profile: Profile) -> str:
@@ -162,18 +172,6 @@ def _format_exception_for_log(exc: BaseException) -> str:
     frames = traceback.extract_tb(exc.__traceback__)
     location = " -> ".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in frames)
     return f"{type(exc).__name__}（{location}）"
-
-
-def _split_output_paths(base_path: Path, count: int) -> list[Path]:
-    """分割時の出力ファイル名を決定する（例：foo_fax.pdf → foo_fax_1of3.pdf）。
-
-    count==1（分割不要）の場合は、元のパスをそのまま返す（F-02の単一ファイル出力を
-    既定の見た目として維持する。命名変更が発生するのは実際に分割された場合のみ）。
-    """
-    if count == 1:
-        return [base_path]
-    stem, suffix = base_path.stem, base_path.suffix
-    return [base_path.with_name(f"{stem}_{i + 1}of{count}{suffix}") for i in range(count)]
 
 
 def _open_folder(folder: Path) -> None:
@@ -204,15 +202,11 @@ def _bring_to_front(window: tk.Misc) -> None:
     window.focus_force()
 
 
-class ProfileChoiceDialog(tk.Toplevel):
-    """FAXサービス（プロファイル）選択ダイアログ（F-28）。"""
+class ProfileChoiceFrame(ttk.Frame):
+    """FAXサービス（プロファイル）を選ぶ欄（F-28）。初回の選択画面と、オプションの画面で使う。"""
 
-    def __init__(self, master: Optional[tk.Misc], current_profile_id: Optional[str] = None):
+    def __init__(self, master: tk.Misc, current_profile_id: Optional[str] = None):
         super().__init__(master)
-        self.title("お使いのFAXサービスを選んでください")
-        self.resizable(False, False)
-        self.result_profile_id: Optional[str] = None
-
         self.profiles = load_all_profiles()
         ordered_ids = ["motfax", "movfax", "messageplus", "sokusoku_fax", "efax", "jfax", "custom"]
         self._ids = [pid for pid in ordered_ids if pid in self.profiles] + [
@@ -220,24 +214,40 @@ class ProfileChoiceDialog(tk.Toplevel):
         ]
 
         ttk.Label(self, text="お使いのインターネットFAXサービスを選択してください。",
-                  anchor="w", justify="left").pack(fill="x", padx=12, pady=(12, 6))
+                  anchor="w", justify="left").pack(fill="x", pady=(0, 6))
 
         # current_profile_idが不正（存在しないid）な場合、どのラジオボタンにも一致せず
         # 未選択のまま「決定」で無効なidが返ってしまうため、先頭を既定選択にフォールバックする。
         initial_id = current_profile_id if current_profile_id in self.profiles else self._ids[0]
-        self._var = tk.StringVar(value=initial_id)
-        body = ttk.Frame(self)
-        body.pack(fill="both", expand=True, padx=12)
-
+        self.var = tk.StringVar(value=initial_id)
         for pid in self._ids:
             profile = self.profiles[pid]
-            frame = ttk.Frame(body)
+            frame = ttk.Frame(self)
             frame.pack(fill="x", pady=3, anchor="w")
-            ttk.Radiobutton(frame, text=_profile_constraint_text(profile), variable=self._var,
+            ttk.Radiobutton(frame, text=_profile_constraint_text(profile), variable=self.var,
                             value=pid).pack(anchor="w")
             if profile.reference_notice:
                 ttk.Label(frame, text=profile.reference_notice, foreground=theme.COLOR_WARNING,
                           anchor="w", justify="left", wraplength=460).pack(anchor="w", padx=(20, 0))
+
+    @property
+    def selected_id(self) -> str:
+        return self.var.get()
+
+
+class ProfileChoiceDialog(tk.Toplevel):
+    """初回起動時のFAXサービス（プロファイル）選択ダイアログ（F-28）。"""
+
+    def __init__(self, master: Optional[tk.Misc], current_profile_id: Optional[str] = None):
+        super().__init__(master)
+        self.title("お使いのFAXサービスを選んでください")
+        self.resizable(False, False)
+        self.result_profile_id: Optional[str] = None
+
+        self._frame = ProfileChoiceFrame(self, current_profile_id)
+        self._frame.pack(fill="both", expand=True, padx=12, pady=(12, 0))
+        self.profiles = self._frame.profiles
+        self._var = self._frame.var
 
         button_row = ttk.Frame(self)
         button_row.pack(fill="x", padx=12, pady=12)
@@ -387,18 +397,11 @@ class CustomProfileDialog(tk.Toplevel):
         self.destroy()
 
 
-class DefaultsDialog(tk.Toplevel):
-    """変換の既定設定ダイアログ（F-26）。保存時はresultにConversionDefaultsを設定する。"""
+class DefaultsFrame(ttk.Frame):
+    """処理内容の既定値の欄（F-26。オプションの画面の1つのタブ）。result()でConversionDefaultsを返す。"""
 
     def __init__(self, master: tk.Misc, current: ConversionDefaults):
         super().__init__(master)
-        self.title("変換の既定設定")
-        self.resizable(False, False)
-        self.result: Optional[ConversionDefaults] = None
-
-        self._folder_policy_var = tk.StringVar(value=current.output_folder_policy)
-        self._fixed_folder_var = tk.StringVar(value=current.fixed_output_folder or "")
-        self._name_policy_var = tk.StringVar(value=current.output_name_policy)
         self._compression_var = tk.StringVar(value=current.compression_policy)
         self._normalize_var = tk.BooleanVar(value=current.normalize_enabled)
         self._dither_label_var = tk.StringVar(
@@ -409,44 +412,21 @@ class DefaultsDialog(tk.Toplevel):
         self._reduction_strategy_var = tk.StringVar(
             value=_REDUCTION_STRATEGY_LABELS.get(
                 current.size_reduction_strategy, _REDUCTION_STRATEGY_LABELS["culprit_only"]))
-        self._report_var = tk.BooleanVar(value=current.report_enabled)
 
-        out = ttk.Labelframe(self, text="出力先")
-        out.pack(fill="x", padx=12, pady=(12, 6))
-        ttk.Radiobutton(out, text="入力ファイルと同じフォルダ", variable=self._folder_policy_var,
-                        value="same_as_input", command=self._update_states).grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
-        ttk.Radiobutton(out, text="固定フォルダ：", variable=self._folder_policy_var,
-                        value="fixed", command=self._update_states).grid(
-            row=1, column=0, sticky="w", padx=8)
-        self._fixed_entry = ttk.Entry(out, textvariable=self._fixed_folder_var, width=38)
-        self._fixed_entry.grid(row=1, column=1, sticky="we", padx=(0, 4))
-        self._fixed_button = theme.create_button(
-            out, text="フォルダ選択...", command=self._on_browse_folder)
-        self._fixed_button.grid(row=1, column=2, sticky="w", padx=(0, 8))
+        ttk.Label(self, text="ファイルを開いたときの、処理内容の初めの値です。",
+                  foreground=theme.COLOR_MUTED).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        opt = ttk.Frame(self)
+        opt.grid(row=1, column=0, columnspan=3, sticky="we")
 
-        ttk.Label(out, text="出力ファイル名：").grid(row=2, column=0, sticky="w", padx=8, pady=(6, 0))
-        ttk.Radiobutton(out, text="入力ファイル名＋「_fax」", variable=self._name_policy_var,
-                        value="append_fax").grid(row=3, column=0, columnspan=3, sticky="w", padx=24)
-        self._same_name_radio = ttk.Radiobutton(
-            out, text="入力ファイル名と同じ", variable=self._name_policy_var, value="same_as_input")
-        self._same_name_radio.grid(row=4, column=0, columnspan=3, sticky="w", padx=24)
-        ttk.Label(out, text="「入力ファイルと同じフォルダ」の場合、入力ファイルの上書きとなるため\n"
-                           "「入力ファイル名と同じ」は選択できません。",
-                  foreground=theme.COLOR_MUTED, justify="left").grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=24, pady=(0, 6))
-
-        opt = ttk.Labelframe(self, text="変換オプションの既定値")
-        opt.pack(fill="x", padx=12, pady=6)
-
-        # 選択肢の数が少ない項目から順に並べる：圧縮方式→容量超過→用紙正規化→変換レポート。
+        # 選択肢の数が少ない項目から順に並べる：圧縮方式→容量超過→用紙正規化。
         # 配置・文言はメイン画面の処理内容選択欄（_build_options）と同一にする。ただし
         # 各選択肢の副作用を説明する「※」注記は、既定値を機械的に設定するだけの本画面
-        # では判断材料として不要なため省く。
+        # では判断材料として不要なため省く。出力先・出力ファイル名・変換レポートの項目は、
+        # Ver200 でなくした（F-02・旧F-25）。
         ttk.Label(opt, text="圧縮方式：").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
 
-        ttk.Radiobutton(opt, text="二値化（白黒・G4圧縮）", variable=self._compression_var,
+        ttk.Radiobutton(opt, text=_MODE_BINARIZE_TEXT, variable=self._compression_var,
                         value="always_binarize", command=self._update_compression_states).grid(
             row=1, column=0, sticky="w", padx=8)
 
@@ -456,113 +436,76 @@ class DefaultsDialog(tk.Toplevel):
             values=list(_DITHER_LABELS.values()))
         self._dither_combo.grid(row=2, column=1, sticky="w")
 
-        ttk.Radiobutton(opt, text="グレースケール（JPEG圧縮）", variable=self._compression_var,
+        ttk.Radiobutton(opt, text=_MODE_GRAYSCALE_TEXT, variable=self._compression_var,
                         value="always_grayscale", command=self._update_compression_states).grid(
             row=3, column=0, sticky="w", padx=8)
 
         ttk.Label(opt, text="　JPEG品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
         self._quality_combo = ttk.Combobox(
-            opt, textvariable=self._quality_label_var, state="readonly", width=6,
+            opt, textvariable=self._quality_label_var, state="readonly", width=10,
             values=_QUALITY_LABELS)
         self._quality_combo.grid(row=4, column=1, sticky="w")
 
+        ttk.Radiobutton(opt, text=_NOTHING_TEXT, variable=self._compression_var,
+                        value="none", command=self._update_compression_states).grid(
+            row=5, column=0, sticky="w", padx=8)
+
         ttk.Label(opt, text="容量超過時の処理方式：").grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+            row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
 
         self._reduce_resolution_radio = ttk.Radiobutton(
-            opt, text="解像度・品質を下げて再実行", variable=self._capacity_method_var,
+            opt, text=_CAPACITY_REDUCE_TEXT, variable=self._capacity_method_var,
             value="reduce_resolution", command=self._update_strategy_combo_state)
-        self._reduce_resolution_radio.grid(row=6, column=0, sticky="w", padx=8)
+        self._reduce_resolution_radio.grid(row=7, column=0, sticky="w", padx=8)
 
-        ttk.Label(opt, text="　削減方式：").grid(row=7, column=0, sticky="e", padx=(24, 0))
+        ttk.Label(opt, text="　削減方式：").grid(row=8, column=0, sticky="e", padx=(24, 0))
         self._strategy_combo = ttk.Combobox(
             opt, textvariable=self._reduction_strategy_var, state="readonly", width=12,
             values=list(_REDUCTION_STRATEGY_LABELS.values()))
-        self._strategy_combo.grid(row=7, column=1, sticky="w")
+        self._strategy_combo.grid(row=8, column=1, sticky="w")
 
         self._split_radio = ttk.Radiobutton(
-            opt, text="分割して再実行", variable=self._capacity_method_var,
+            opt, text=_CAPACITY_SPLIT_TEXT, variable=self._capacity_method_var,
             value="split", command=self._update_strategy_combo_state)
-        self._split_radio.grid(row=8, column=0, sticky="w", padx=8)
+        self._split_radio.grid(row=9, column=0, sticky="w", padx=8)
 
-        tk.Checkbutton(
-            opt, text="用紙正規化（用紙サイズ・方向が対応外のページを自動で修正します）",
-            variable=self._normalize_var,
-        ).grid(row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+        ttk.Radiobutton(
+            opt, text=_NOTHING_TEXT, variable=self._capacity_method_var,
+            value="none", command=self._update_strategy_combo_state).grid(
+            row=10, column=0, sticky="w", padx=8)
 
-        tk.Checkbutton(
-            opt, text="変換レポートを出力先フォルダに保存する",
-            variable=self._report_var,
-        ).grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+        self._normalize_check = tk.Checkbutton(opt, text=_NORMALIZE_TEXT, variable=self._normalize_var)
+        self._normalize_check.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
 
-        button_row = ttk.Frame(self)
-        button_row.pack(fill="x", padx=12, pady=12)
-        save_button = theme.create_button(
-            button_row, accent=True, text="保存", width=10, command=self._on_save)
-        save_button.pack(side="right")
-        theme.create_button(
-            button_row, text="キャンセル", width=10, command=self.destroy).pack(
-            side="right", padx=(0, 6))
+        self._none_note_var = tk.StringVar()
+        ttk.Label(opt, textvariable=self._none_note_var, foreground=theme.COLOR_MUTED,
+                  justify="left").grid(row=12, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
-        self._update_states()
-        self._update_strategy_combo_state()
         self._update_compression_states()
-        self.transient(master)
-        self.grab_set()
-        _bring_to_front(self)
 
     def _update_compression_states(self) -> None:
-        """ディザ方式・JPEG品質は、対応する圧縮方式を選択している場合のみ選択可能とする。"""
-        is_binarize = self._compression_var.get() == "always_binarize"
-        self._dither_combo.configure(state="readonly" if is_binarize else "disabled")
-        self._quality_combo.configure(state="disabled" if is_binarize else "readonly")
+        """ディザ方式・JPEG品質は、対応する圧縮方式を選択している場合のみ選択可能とする。
+        「何もしない」のときに効かない項目（解像度・品質を下げて再実行、用紙正規化）は、
+        選べない状態にする（メイン画面と同じ。F-11）。"""
+        policy = self._compression_var.get()
+        nothing = policy == "none"
+        self._dither_combo.configure(state="readonly" if policy == "always_binarize" else "disabled")
+        self._quality_combo.configure(state="readonly" if policy == "always_grayscale" else "disabled")
+        if nothing and self._capacity_method_var.get() == "reduce_resolution":
+            self._capacity_method_var.set("none")
+        self._reduce_resolution_radio.configure(state="disabled" if nothing else "normal")
+        self._normalize_check.configure(state="disabled" if nothing else "normal")
+        self._none_note_var.set(_NONE_MODE_NOTE if nothing else "")
+        self._update_strategy_combo_state()
 
     def _update_strategy_combo_state(self) -> None:
         """削減方式は、「解像度を下げて再実行」を選択している場合のみ選択可能とする。"""
-        enabled = self._capacity_method_var.get() == "reduce_resolution"
+        enabled = (self._capacity_method_var.get() == "reduce_resolution"
+                   and self._compression_var.get() != "none")
         self._strategy_combo.configure(state="readonly" if enabled else "disabled")
 
-    def _update_states(self) -> None:
-        """固定フォルダ欄の活性と、禁止組合せ（同一フォルダ×同一名）の選択不可を制御する。"""
-        fixed = self._folder_policy_var.get() == "fixed"
-        state = "normal" if fixed else "disabled"
-        self._fixed_entry.configure(state=state)
-        self._fixed_button.configure(state=state)
-        if fixed:
-            self._same_name_radio.configure(state="normal")
-        else:
-            if self._name_policy_var.get() == "same_as_input":
-                self._name_policy_var.set("append_fax")
-            self._same_name_radio.configure(state="disabled")
-
-    def _on_browse_folder(self) -> None:
-        path = filedialog.askdirectory(title="固定出力フォルダを選択", parent=self)
-        if path:
-            self._fixed_folder_var.set(path)
-
-    def _on_save(self) -> None:
-        folder_policy = self._folder_policy_var.get()
-        fixed = self._fixed_folder_var.get().strip() or None
-        if folder_policy == "fixed":
-            if not fixed:
-                messagebox.showerror("VA FAX", "固定フォルダを指定してください。", parent=self)
-                return
-            if not Path(fixed).is_dir():
-                proceed = messagebox.askyesno(
-                    "VA FAX",
-                    "指定されたフォルダが現在見つかりません（共有フォルダ未接続の可能性があります）。\n"
-                    "このまま保存しますか？", parent=self)
-                if not proceed:
-                    return
-
-        name_policy = self._name_policy_var.get()
-        if folder_policy == "same_as_input" and name_policy == "same_as_input":
-            name_policy = "append_fax"  # UI上は選択不可だが念のため矯正（F-02・F-03）
-
-        self.result = ConversionDefaults(
-            output_folder_policy=folder_policy,
-            fixed_output_folder=fixed,
-            output_name_policy=name_policy,
+    def result(self) -> ConversionDefaults:
+        return ConversionDefaults(
             compression_policy=self._compression_var.get(),
             normalize_enabled=self._normalize_var.get(),
             dither_method=_DITHER_LABELS_REV[self._dither_label_var.get()],
@@ -570,9 +513,174 @@ class DefaultsDialog(tk.Toplevel):
                 _QUALITY_LABELS.index(self._quality_label_var.get())],
             capacity_exceeded_method=self._capacity_method_var.get(),
             size_reduction_strategy=_REDUCTION_STRATEGY_LABELS_REV[self._reduction_strategy_var.get()],
-            report_enabled=self._report_var.get(),
         )
+
+
+class OptionsDialog(tk.Toplevel):
+    """［ファイル］→［オプション］の画面（F-35）。
+
+    タブは「保存」「処理内容の既定値」（F-26）「FAXサービス」（F-28）。Ver200 で、［設定］メニューの
+    「FAXサービスを変更」「変換の既定設定」をここにまとめた（2026-11-17 班長指示）。保存時は result に
+    選んだ値の辞書を設定する（設定ファイルへの書き込みは、画面の側が行う）。
+    """
+
+    def __init__(self, master: tk.Misc, settings: Settings, current_profile_id: str):
+        super().__init__(master)
+        self.title("オプション")
+        self.resizable(False, False)
+        self.result: Optional[dict] = None
+        self._settings = settings
+        self._initial_profile_id = current_profile_id
+        self._pending_custom: Optional[Profile] = None   # カスタムの内容（保存するまで書かない）
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(12, 0))
+
+        # ---- 保存
+        save_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(save_tab, text="保存")
+        self.save_tab = save_tab
+        self._append_suffix_var = tk.BooleanVar(value=settings.append_fax_to_save_name)
+        self._suffix_var = tk.StringVar(value=settings.save_name_suffix)
+        self._open_folder_var = tk.BooleanVar(value=settings.open_folder_after_save)
+
+        tk.Checkbutton(
+            save_tab, text="［名前を付けて保存］・［コピーして開く］のファイル名に、次の文字を付ける",
+            variable=self._append_suffix_var, command=self._update_suffix_state,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(save_tab, text="付ける文字：").grid(row=1, column=0, sticky="w", padx=(24, 4), pady=(2, 0))
+        self._suffix_entry = ttk.Entry(save_tab, textvariable=self._suffix_var, width=16)
+        self._suffix_entry.grid(row=1, column=1, sticky="w", pady=(2, 0))
+        self._suffix_example_var = tk.StringVar()
+        ttk.Label(save_tab, textvariable=self._suffix_example_var, foreground=theme.COLOR_MUTED,
+                  justify="left").grid(row=2, column=0, columnspan=2, sticky="w", padx=(24, 0), pady=(2, 10))
+        self._suffix_var.trace_add("write", lambda *_a: self._update_suffix_state())
+
+        tk.Checkbutton(
+            save_tab, text="保存の後に、保存したフォルダを開く", variable=self._open_folder_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Label(save_tab, text="FAXサービスの画面へアップロードするときに、ファイルを探す手間が減ります。",
+                  foreground=theme.COLOR_MUTED).grid(row=4, column=0, columnspan=2, sticky="w", padx=(24, 0))
+
+        # ---- 処理内容の既定値
+        self.defaults_frame = DefaultsFrame(self.notebook, settings.defaults)
+        self.defaults_frame.configure(padding=10)
+        self.notebook.add(self.defaults_frame, text="処理内容の既定値")
+
+        # ---- FAXサービス
+        profile_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(profile_tab, text="FAXサービス")
+        self.profile_frame = ProfileChoiceFrame(profile_tab, current_profile_id)
+        self.profile_frame.pack(fill="x")
+        self._custom_button = theme.create_button(
+            profile_tab, text="カスタムの内容を入力...", command=self._edit_custom)
+        self._custom_button.pack(anchor="w", pady=(8, 0))
+        self.profile_frame.var.trace_add("write", lambda *_a: self._update_custom_button())
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill="x", padx=12, pady=12)
+        theme.create_button(
+            button_row, accent=True, text="保存", width=10, command=self._on_save).pack(side="right")
+        theme.create_button(
+            button_row, text="キャンセル", width=10, command=self.destroy).pack(side="right", padx=(0, 6))
+
+        self._update_suffix_state()
+        self._update_custom_button()
+        self.transient(master)
+        self.grab_set()
+        self.bind("<Escape>", lambda _e: self.destroy())
+        _bring_to_front(self)
+
+    def _update_suffix_state(self) -> None:
+        on = bool(self._append_suffix_var.get())
+        self._suffix_entry.configure(state="normal" if on else "disabled")
+        suffix = valid_name_suffix(self._suffix_var.get())
+        if not on:
+            self._suffix_example_var.set("例：契約書.pdf → 契約書.pdf（文字を付けません）")
+        elif suffix is None:
+            self._suffix_example_var.set(
+                f"付ける文字を入力してください（{NAME_SUFFIX_MAX_LENGTH}文字まで。"
+                '\\ / : * ? " < > | は使えません）')
+        else:
+            self._suffix_example_var.set(
+                f"例：契約書.pdf → 契約書{suffix}.pdf（保存の画面に初めに入る名前です。画面で変えることもできます）")
+
+    def _update_custom_button(self) -> None:
+        is_custom = self.profile_frame.selected_id == "custom"
+        self._custom_button.configure(state="normal" if is_custom else "disabled")
+
+    def _edit_custom(self) -> bool:
+        """カスタムの内容を入力する画面を開く。入力したらTrue（保存するまでは書かない）。"""
+        current = self._pending_custom or self.profile_frame.profiles["custom"]
+        editor = CustomProfileDialog(self, current)
+        self.wait_window(editor)
+        if editor.result is None:
+            return False
+        self._pending_custom = editor.result
+        return True
+
+    def _on_save(self) -> None:
+        append = bool(self._append_suffix_var.get())
+        suffix = valid_name_suffix(self._suffix_var.get())
+        if append and suffix is None:
+            self.notebook.select(self.save_tab)
+            messagebox.showerror(
+                APP_NAME,
+                f"ファイル名に付ける文字を入力してください（{NAME_SUFFIX_MAX_LENGTH}文字まで。"
+                '\\ / : * ? " < > | は使えません）。', parent=self)
+            return
+        profile_id = self.profile_frame.selected_id
+        if (profile_id == "custom" and profile_id != self._initial_profile_id
+                and self._pending_custom is None and not self._edit_custom()):
+            # ほかのサービスからカスタムに替えるときは、内容の入力を挟む（初回の選択画面と同じ。F-27）
+            return
+        self.result = {
+            "profile_id": profile_id,
+            "custom_profile": self._pending_custom,
+            "defaults": self.defaults_frame.result(),
+            "append_suffix": append,
+            "suffix": suffix or self._settings.save_name_suffix,
+            "open_folder_after_save": bool(self._open_folder_var.get()),
+        }
         self.destroy()
+
+
+class ChoiceDialog(tk.Toplevel):
+    """文と、いくつかのボタンを出し、押されたボタンの値を返す画面（保存の確認など）。
+
+    buttonsは (ボタンの文字, 返す値, 主要な操作か) の並び（左から）。閉じるボタン・Escapeでは
+    cancel_valueを返す。
+    """
+
+    def __init__(self, master: tk.Misc, title: str, message: str,
+                 buttons: list[tuple[str, str, bool]], cancel_value: Optional[str] = None):
+        super().__init__(master)
+        self.title(title)
+        self.resizable(False, False)
+        self.result: Optional[str] = cancel_value
+        ttk.Label(self, text=message, anchor="w", justify="left", wraplength=480).pack(
+            fill="x", padx=16, pady=(16, 12))
+        row = ttk.Frame(self)
+        row.pack(fill="x", padx=16, pady=(0, 14))
+        for label, value, accent in reversed(buttons):
+            theme.create_button(row, accent=accent, text=label,
+                                command=lambda v=value: self._choose(v)).pack(side="right", padx=(8, 0))
+        self.transient(master)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda _e: self.destroy())
+        _bring_to_front(self)
+
+    def _choose(self, value: str) -> None:
+        self.result = value
+        self.destroy()
+
+
+def ask_choice(master: tk.Misc, title: str, message: str, buttons: list[tuple[str, str, bool]],
+               cancel_value: Optional[str] = None) -> Optional[str]:
+    dialog = ChoiceDialog(master, title, message, buttons, cancel_value)
+    master.wait_window(dialog)
+    return dialog.result
 
 
 class VaFaxApp(TkinterDnD.Tk):
@@ -586,53 +694,44 @@ class VaFaxApp(TkinterDnD.Tk):
         self.profile = profile
         self.logger = setup_logger()
 
-        self.input_paths: list[Path] = []
-        self._input_undo_stack: list[list[Path]] = []
-        # 入力ファイル欄の行選択の状態（1始まりの行番号。Noneは未選択）。
-        # _sel_anchorは選択の起点、_sel_activeはShift＋クリック・矢印キーで動かす側の端。
-        self._sel_anchor: Optional[int] = None
-        self._sel_active: Optional[int] = None
-        # 入力ファイル欄の行ドラッグ（並べ替え）の状態。_drag_blockは移動対象の行範囲
-        # （1始まり・両端含む）で、Noneはドラッグ操作中でないことを表す。
-        self._drag_block: Optional[tuple[int, int]] = None
-        self._drag_press_line = 1
-        self._shift_selecting = False
-        self._drag_origin_x = 0
-        self._drag_origin_y = 0
-        self._drag_pointer_x = 0
-        self._drag_pointer_y = 0
-        self._dragging = False
-        self._drag_scroll_after_id: Optional[str] = None
+        # 文書の状態（F-01・F-32）。ファイルの名前と場所は、ここ（メモリ内）にだけ持つ。
+        self.document: Optional[Document] = None
+        self._save_path: Optional[Path] = None      # 保存先（Noneは、名前のない文書）
+        self._name_base: Optional[Path] = None      # 名前のない文書の、名前の元にするファイル（F-32）
+        self._doc_dir: Optional[Path] = None        # 名前を付けて保存の、初めの場所
+        self._material_paths: list[Path] = []       # 材料にしたファイル（開いた・追加した）
+        self._added_paths: list[Path] = []          # そのうち、追加したファイル（保存先にできない）
+        self._dirty = False                         # 未保存か（題名の「＊」）
+        self._assembled: Optional[bytes] = None     # いまのページの表を組み立てたPDF（診断済みのもの）
+        self._pending_selection: tuple[list[int], Optional[int]] = ([], None)
+        # 圧縮方式を「何もしない」にしたとき、容量超過時の「解像度・品質を下げて再実行」から
+        # 「何もしない」へ切り替えたか（圧縮方式を戻したときに、元に戻すため）
+        self._capacity_switched_for_none = False
+        self._normal_geometry: Optional[str] = None   # 最大化していないときの大きさ・位置（F-23）
+        self._applying_defaults = False
+
         self.diagnosis: Optional[diagnose_module.Diagnosis] = None
-        self._diagnosed_input_count = 0
         self._message_queue: "queue.Queue[dict]" = queue.Queue()
         # 起きた誤りの記録（型と場所だけ。［ヘルプ］→［診断情報をコピー］に載せる）
         self._errors = diagnostics.ErrorLog()
-        self._last_output_dir: Optional[Path] = None
-        self._converting = False
+        self._saving = False
         self._diagnosis_token = 0
-        # 入力ファイル欄でCtrl併用のキー（Ctrl+A等）と判定するevent.stateのビット。
-        # Mac（N-03）ではCommand（⌘。TkではMod1＝0x8）でも同じ働きにする。
-        self._shortcut_state_mask = _CONTROL_STATE_MASK
-        if theme.is_aqua(self):
-            self._shortcut_state_mask |= _MAC_COMMAND_STATE_MASK
 
-        self.title("VA FAX")
+        self.title(APP_NAME)
         self.resizable(True, True)
         self.minsize(900, 700)
         self.configure(bg=theme.COLOR_BG)
+        self._restore_window_state()
 
         self._build_variables()
         self._build_menu()
         self._build_widgets()
         self._bind_preview_option_traces()
-        # Ctrl+Zは、メイン画面内のどこにフォーカスがあっても入力ファイル一覧の
-        # 取り消しとして機能させる（プレビュー欄のクリック等でフォーカスが入力欄の
-        # 外に移っていても効くように）。大文字Zはキャップスロック中の取りこぼし対策。
-        self.bind_all("<Control-z>", self._on_global_undo, add="+")
-        self.bind_all("<Control-Z>", self._on_global_undo, add="+")
+        self._bind_keys()
+        self.protocol("WM_DELETE_WINDOW", self._on_quit)
         if theme.is_aqua(self):
             self._bind_mac_keys()
+        self._update_command_states()
         self._poll_queue()
         _bring_to_front(self)
 
@@ -648,10 +747,8 @@ class VaFaxApp(TkinterDnD.Tk):
     def _build_variables(self) -> None:
         d = self.settings.defaults
         self.profile_label_var = tk.StringVar(value=_profile_summary(self.profile))
-        self.output_path_var = tk.StringVar()
         self.normalize_var = tk.BooleanVar(value=d.normalize_enabled)
-        self.mode_var = tk.StringVar(
-            value="grayscale" if d.compression_policy == "always_grayscale" else "binarize")
+        self.mode_var = tk.StringVar(value=_POLICY_TO_MODE.get(d.compression_policy, "binarize"))
         self.dither_label_var = tk.StringVar(
             value=_DITHER_LABELS.get(d.dither_method, _DITHER_LABELS["auto"]))
         self.quality_label_var = tk.StringVar(
@@ -660,16 +757,30 @@ class VaFaxApp(TkinterDnD.Tk):
         self.reduction_strategy_label_var = tk.StringVar(
             value=_REDUCTION_STRATEGY_LABELS.get(
                 d.size_reduction_strategy, _REDUCTION_STRATEGY_LABELS["culprit_only"]))
-        self.report_var = tk.BooleanVar(value=d.report_enabled)
         self.progress_var = tk.DoubleVar(value=0.0)
+        self.status_var = tk.StringVar(value="")
 
     def _build_menu(self) -> None:
         menubar = tk.Menu(self)
 
-        settings_menu = tk.Menu(menubar, tearoff=False)
-        settings_menu.add_command(label="FAXサービスを変更...", command=self._on_change_profile)
-        settings_menu.add_command(label="変換の既定設定...", command=self._on_open_defaults)
-        menubar.add_cascade(label="設定", menu=settings_menu)
+        # ［ファイル］（F-32。リボンの「ファイル」の組と同じ操作）
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="開く...", accelerator="Ctrl+O", command=self._on_open)
+        file_menu.add_command(label="コピーして開く...", command=self._on_open_copy)
+        file_menu.add_separator()
+        file_menu.add_command(label="保存", accelerator="Ctrl+S", command=self._on_save)
+        file_menu.add_command(label="名前を付けて保存...", accelerator="Ctrl+Shift+S",
+                              command=self._on_save_as)
+        file_menu.add_separator()
+        file_menu.add_command(label="閉じる", command=self._on_close_document)
+        file_menu.add_separator()
+        file_menu.add_command(label="オプション...", command=self._on_options)
+        file_menu.add_separator()
+        file_menu.add_command(label="終了", command=self._on_quit)
+        menubar.add_cascade(label="ファイル", menu=file_menu)
+
+        # Ver130 までの［設定］メニュー（FAXサービスを変更・変換の既定設定）は、［ファイル］→
+        # ［オプション］にまとめた（2026-11-17 班長指示。F-35）。
 
         # ［ヘルプ］→［診断情報をコピー］（2026-11-10 班長決定：Pythonのツールに、
         # 次の版上げのときに入れる）。不具合をAI・作成者に相談するときに渡す文を作る。
@@ -680,7 +791,7 @@ class VaFaxApp(TkinterDnD.Tk):
         menubar.add_cascade(label="ヘルプ", menu=help_menu)
 
         self.config(menu=menubar)
-        self._settings_menu = settings_menu
+        self._file_menu = file_menu
 
     def _show_about(self) -> None:
         messagebox.showinfo(
@@ -701,7 +812,7 @@ class VaFaxApp(TkinterDnD.Tk):
             "VA FAX",
             "診断情報をコピーしました。\n\n"
             "不具合を相談するときは、これを貼り付けて渡してください。版・環境・設定の数値・"
-            "件数・誤りの起きた場所だけが入っていて、入力・出力ファイルの名前や、ファイル・"
+            "件数・誤りの起きた場所だけが入っていて、開いた・保存したファイルの名前や、ファイル・"
             "フォルダの場所は入っていません。\n"
             "渡す前に、メモ帳などに貼り付けて、中身を確かめることができます。",
             parent=self,
@@ -710,7 +821,7 @@ class VaFaxApp(TkinterDnD.Tk):
     def _diagnostic_text(self) -> str:
         """診断情報の文。
 
-        中身（入力・出力ファイルの名前、フォルダの場所、例外のメッセージの本文）は
+        中身（開いた・保存したファイルの名前、フォルダの場所、例外のメッセージの本文）は
         一切入れない（diagnostics.pyの冒頭・F-24と同じ方針）。
         """
         d = diagnostics
@@ -718,7 +829,7 @@ class VaFaxApp(TkinterDnD.Tk):
         defaults = self.settings.defaults
         lines = [
             f"VA FAX 診断情報（{datetime.now():%Y-%m-%d %H:%M}）",
-            "※ 入力・出力ファイルの名前、ファイルやフォルダの場所、利用者とPCの名前は"
+            "※ 開いた・保存したファイルの名前、ファイルやフォルダの場所、利用者とPCの名前は"
             "入っていません。",
             "",
         ]
@@ -734,35 +845,37 @@ class VaFaxApp(TkinterDnD.Tk):
             "",
         ]
 
-        fixed_set = "設定あり" if defaults.fixed_output_folder else "設定なし"
         lines += [
-            "■ 変換の既定設定（F-26。フォルダの場所は入れない）",
-            f"出力先：{defaults.output_folder_policy}（固定フォルダ：{fixed_set}）・"
-            f"ファイル名：{defaults.output_name_policy}",
+            "■ 変換の既定設定（F-26）",
             f"圧縮方式：{defaults.compression_policy}・ディザ：{defaults.dither_method}・"
             f"JPEG品質：{defaults.jpeg_quality_level}",
             f"容量超過：{defaults.capacity_exceeded_method}・削減方式：{defaults.size_reduction_strategy}・"
-            f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}・"
-            f"レポート：{'保存する' if defaults.report_enabled else '保存しない'}",
+            f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}",
             "",
         ]
 
         diagnosis = self.diagnosis
+        document = self.document
+        if document is None:
+            doc_text = "開いていない"
+        else:
+            doc_text = (f"{document.page_count}ページ・材料のファイル {document.used_source_count()}件・"
+                        f"保存先 {'あり' if self._save_path is not None else 'なし（名前のない文書）'}・"
+                        f"未保存の変更 {'あり' if self._dirty else 'なし'}・"
+                        f"元に戻せる {'はい' if document.can_undo else 'いいえ'}")
         lines += [
             "■ いまの画面の状態",
-            f"入力ファイル：{len(self.input_paths)}件",
-            "事前診断：" + ("まだ" if diagnosis is None else
+            f"文書：{doc_text}",
+            "診断：" + ("まだ" if diagnosis is None else
                           f"済み（{diagnosis.page_count}ページ・"
                           f"{_format_size(diagnosis.file_size_bytes)}・"
                           f"テキスト{'あり' if diagnosis.has_text else 'なし'}・"
                           f"対応外サイズ {len(diagnosis.unsupported_pages)}ページ）"),
-            f"出力ファイル欄：{'入力あり' if self.output_path_var.get().strip() else '未入力'}",
             f"処理内容：圧縮方式 {self.mode_var.get()}・ディザ {self.dither_label_var.get()}・"
             f"JPEG品質 {self.quality_label_var.get()}・容量超過 {self.capacity_method_var.get()}・"
             f"削減方式 {self.reduction_strategy_label_var.get()}・"
-            f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}・"
-            f"レポート {'保存する' if self.report_var.get() else '保存しない'}",
-            f"変換：{'実行中' if self._converting else 'していない'}",
+            f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}",
+            f"保存：{'実行中' if self._saving else 'していない'}",
             "",
         ]
 
@@ -776,10 +889,9 @@ class VaFaxApp(TkinterDnD.Tk):
         return "\n".join(lines) + "\n"
 
     def _set_settings_menu_enabled(self, enabled: bool) -> None:
-        """変換実行中はプロファイル・既定設定の変更を禁止する（B-1。容量判定等の途中すり替わり防止）。"""
+        """保存の実行中はプロファイル・既定設定の変更を禁止する（B-1。容量判定等の途中すり替わり防止）。"""
         state = "normal" if enabled else "disabled"
-        self._settings_menu.entryconfig(0, state=state)
-        self._settings_menu.entryconfig(1, state=state)
+        self._file_menu.entryconfig("オプション...", state=state)
 
     def _build_widgets(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -798,11 +910,19 @@ class VaFaxApp(TkinterDnD.Tk):
             bg=theme.COLOR_BORDER, bd=0)
         self._paned.grid(row=1, column=0, sticky="nsew")
 
+        # プレビュー欄のサムネイルが、ページの一覧を兼ねる（F-15の4・F-33）。
         self.preview_pane = PreviewPane(self._paned)
+        self.preview_pane.set_editable(True)
+        self.preview_pane.on_delete = self._delete_pages
+        self.preview_pane.on_move = self._move_pages
+        self.preview_pane.on_selection_changed = self._update_command_states
+        self.preview_pane.on_context_menu = self._show_page_menu
+        # 欄の外へ持ち出している間に表示するカーソル（ゴミ箱。同梱の.curを使う）
+        self.preview_pane.remove_cursor = theme.resolve_remove_cursor(self.preview_pane)
+
         controls_frame = ttk.Frame(self._paned)
         controls_frame.columnconfigure(1, weight=1)
-        controls_frame.rowconfigure(2, weight=1)
-        controls_frame.rowconfigure(6, weight=1)
+        controls_frame.rowconfigure(1, weight=1)
 
         self._paned.add(self.preview_pane, minsize=220, width=480, stretch="always")
         self._paned.add(controls_frame, minsize=520, width=680, stretch="always")
@@ -814,146 +934,134 @@ class VaFaxApp(TkinterDnD.Tk):
         ttk.Label(controls_frame, textvariable=self.profile_label_var, font=("", 10, "bold")).grid(
             row=0, column=0, columnspan=3, sticky="w", **pad)
 
-        ttk.Label(controls_frame, text="入力ファイル：").grid(row=1, column=0, sticky="nw", **label_pad)
-        # 複数ファイル対応（F-01）：1行1ファイルで表示するスクロール可能なテキスト欄。
-        # 直接編集（文字の挿入・部分削除）は許可しない（A-2）：許すと、表示中のパスと
-        # 実際に変換されるself.input_pathsが食い違い、誤ったファイルが変換される危険が
-        # あるため。追加は「入力元」ボタンとドラッグ＆ドロップに限定し、削除は
-        # Delete／BackSpaceキーによる行単位の削除のみを受け付ける（_on_input_text_key）。
-        input_frame = ttk.Frame(controls_frame)
-        input_frame.grid(row=1, column=1, columnspan=2, sticky="we", **field_pad)
-        input_frame.columnconfigure(0, weight=1)
-        # 操作対象は「選択中の行」（帯状の反転表示）で示すため、点滅する挿入カーソルは
-        # 表示しない（insertwidth=0）。文字単位の入力位置には意味がないため。
-        input_text = tk.Text(input_frame, height=3, width=55, wrap="none",
-                             font="TkDefaultFont", insertwidth=0)
-        input_scroll = ttk.Scrollbar(input_frame, orient="vertical", command=input_text.yview)
-        input_text.configure(yscrollcommand=input_scroll.set)
-        input_text.grid(row=0, column=0, sticky="we")
-        input_scroll.grid(row=0, column=1, sticky="ns")
-
-        input_text.drop_target_register(DND_FILES)
-        input_text.dnd_bind("<<Drop>>", self._on_drop_input_file)
-        input_text.bind("<Key>", self._on_input_text_key)
-        # 行のマウスドラッグは結合順の並べ替えとする（F-15）。Textの既定動作である
-        # ドラッグによる範囲選択はShiftキー併用時のみ（Shift+クリック・Shift+ドラッグ）
-        # に残す。ファイル一覧としては「つかんで動かす＝順番の変更」の方が直感的なため。
-        input_text.bind("<ButtonPress-1>", self._on_input_drag_press)
-        input_text.bind("<B1-Motion>", self._on_input_drag_motion)
-        input_text.bind("<B1-Leave>", self._on_input_drag_leave)
-        input_text.bind("<ButtonRelease-1>", self._on_input_drag_release)
-        input_text.bind("<Escape>", self._on_input_escape)
-        # 挿入位置を示す線（ドラッグ中のみ欄の上に重ねて表示する）。
-        self._drop_indicator = tk.Frame(
-            input_frame, height=2, bd=0, highlightthickness=0, bg=theme.COLOR_ACCENT)
-        # コピー・カット・ペーストは行単位（1行1ファイル）の操作として自前で処理する
-        # （並べ替え用途。仮想イベントは同一バインドタグ内で<Key>より優先されるため、
-        # <Key>側ではなくここで実処理に接続する）。
-        input_text.bind("<<Copy>>", self._on_input_copy)
-        input_text.bind("<<Cut>>", self._on_input_cut)
-        input_text.bind("<<Paste>>", self._on_input_paste)
-        input_text.bind("<<Undo>>", self._on_input_undo)
-        # 上記以外の編集経路（中クリック貼り付け・メニュー由来の仮想イベント）は遮断する。
-        input_text.bind("<ButtonRelease-2>", lambda _e: "break")
-        for sequence in ("<<PasteSelection>>", "<<Clear>>", "<<Redo>>"):
-            input_text.bind(sequence, lambda _e: "break")
-
-        self.input_text = input_text
-        self._input_text_default_fg = input_text.cget("foreground")
-        self._input_text_default_cursor = input_text.cget("cursor")
-        # 欄の外へ持ち出している間に表示するカーソル（ゴミ箱。同梱の.curを使う）
-        self._remove_cursor = theme.resolve_remove_cursor(input_text)
-        self._refresh_input_text()
-
-        ttk.Label(controls_frame, text="事前診断結果：").grid(row=2, column=0, sticky="nw", **label_pad)
+        ttk.Label(controls_frame, text="診断結果：").grid(row=1, column=0, sticky="nw", **label_pad)
         self.diagnosis_text = tk.Text(controls_frame, height=7, width=64, state="disabled", wrap="word")
-        self.diagnosis_text.grid(row=2, column=1, columnspan=2, sticky="nswe", **field_pad)
+        self.diagnosis_text.grid(row=1, column=1, columnspan=2, sticky="nswe", **field_pad)
 
-        options = ttk.Labelframe(controls_frame, text="処理内容の選択（変換前にご確認ください）")
-        options.grid(row=3, column=0, columnspan=3, sticky="we", padx=10, pady=6)
+        options = ttk.Labelframe(controls_frame, text="処理内容の選択（保存の前にご確認ください）")
+        options.grid(row=2, column=0, columnspan=3, sticky="we", padx=10, pady=6)
         self._build_options(options)
-
-        ttk.Label(controls_frame, text="出力ファイル：").grid(row=4, column=0, sticky="w", **label_pad)
-        output_entry = ttk.Entry(controls_frame, textvariable=self.output_path_var, width=55)
-        output_entry.grid(row=4, column=1, columnspan=2, sticky="we", **field_pad)
-
-        # 入力ファイル未選択の間は、現在の既定設定（F-26）から導かれる出力先方針
-        # （固定フォルダのパス、または「入力ファイルと同じフォルダ」）をグレーで示す。
-        self.output_entry = output_entry
-        self._output_entry_default_fg = output_entry.cget("foreground")
-        output_entry.bind("<FocusIn>", self._on_output_entry_focus_in)
-        output_entry.bind("<FocusOut>", self._on_output_entry_focus_out)
-        self._show_output_placeholder()
 
         self.progress_bar = ttk.Progressbar(
             controls_frame, variable=self.progress_var, maximum=100, length=300)
-        self.progress_bar.grid(row=5, column=0, columnspan=3, sticky="we", **pad)
+        self.progress_bar.grid(row=3, column=0, columnspan=3, sticky="we", **pad)
         self.progress_bar.grid_remove()
 
-        ttk.Label(controls_frame, text="処理ログ：").grid(row=6, column=0, sticky="nw", **label_pad)
-        self.log_text = tk.Text(controls_frame, height=8, width=64, state="disabled", wrap="word")
-        self.log_text.grid(row=6, column=1, columnspan=2, sticky="nswe", **field_pad)
+        # 処理ログの欄は、Ver200でなくした（2026-11-17 班長指示）。開いた・保存した等の結果を、
+        # 1行で示す（ページごとの処理内容は、ログファイルにだけ残す。F-17・F-24）。
+        ttk.Label(controls_frame, textvariable=self.status_var, anchor="w", justify="left",
+                  wraplength=640).grid(row=4, column=0, columnspan=3, sticky="we", **pad)
 
         ttk.Label(
             controls_frame,
             text="※ FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。",
             foreground=theme.COLOR_MUTED, anchor="w", justify="left",
-        ).grid(row=7, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
+
+        # ファイルのドラッグ＆ドロップ（F-32・F-33）：文書を開いていないときは開き、
+        # 開いているときはページの追加とする。ウィンドウのどこに落としても受ける。
+        for widget in (self, self.preview_pane):
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<DropPosition>>", self._on_drop_position)
+            widget.dnd_bind("<<DropLeave>>", self._on_drop_leave)
+            widget.dnd_bind("<<Drop>>", self._on_drop)
 
     # ------------------------------------------------------------------ リボン（F-15）
 
     def _build_ribbon(self) -> None:
         """画面最上段のリボン（Wordのリボンと同じ形。VA mintsと同じribbon.pyを用いる）。
 
-        画面の操作ボタンはすべてここに集約し、入力ファイル一覧・出力ファイル欄の隣には
-        ボタンを置かない。組は操作の流れに沿って「入力」「変換」「出力」の3つとする。
-        主要な操作（入力元・変換して出力）は大きいボタンとし、常時アクセント色の枠線で
-        強調する。各ボタンはマウスを重ねると説明書きを出す（tooltip.py）。
-        FAXサービスの変更・変換の既定設定は、従来どおりメニューバーの設定メニューに置く。
+        画面の操作ボタンはすべてここに集約する。組は「ファイル」（開く・コピーして開く・保存・
+        名前を付けて保存）と「ページ」（追加・削除・回転〔角度はメニューで選ぶ〕・元に戻す・
+        やり直す）の2つ。
+        主要な操作（開く・名前を付けて保存・追加）は大きいボタンとし、開く・名前を付けて保存は
+        常時アクセント色の枠線で強調する。
+        各ボタンはマウスを重ねると説明書きを出す（tooltip.py）。
+        FAXサービスの変更・処理内容の既定値は、［ファイル］→［オプション］に置く（F-35）。
         """
         self._icons = IconSet(self)
         self.ribbon = ribbon = Ribbon(self, self._icons)
         ribbon.grid(row=0, column=0, sticky="we", padx=8, pady=(6, 2))
 
-        group = ribbon.group("入力")
-        self.input_button = group.large(
-            "入力元...", self._browse_input, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
-            tip="変換するPDFファイルを選びます。"
-                "複数選べ、すでに選んでいる場合は一覧の末尾に追加します"
-                "（一覧の上から順に結合して、1送信分の1ファイルにします）。"
-                "一覧へのドラッグ＆ドロップでも追加できます。"
-                "入力したファイル自体は変更しません。")
+        group = ribbon.group("ファイル")
+        # このツールでは、送信用のファイルを別に作る［名前を付けて保存］を標準の保存とし、大きい
+        # ボタンにする。開いたファイルを書き換える［保存］（上書き保存）は小さいボタンとし、押すたびに
+        # 確認を出す（2026-11-17 班長指示）。
+        self.open_button = group.large(
+            "開く", self._on_open, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            tip="PDFファイルを開きます（Ctrl+O）。"
+                "ウィンドウへのドラッグ＆ドロップでも開けます。")
+        self.save_as_button = group.large(
+            "名前を付けて保存", self._on_save_as, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            state="disabled", tip=self._save_as_button_tip)
+        self.open_copy_button = group.small(
+            "コピーして開く", self._on_open_copy,
+            tip="PDFファイルの中身を、名前のない新しい文書として開きます。"
+                "元のファイルは変わりません。"
+                "保存するときに、名前を指定します（初めの値は「元の名前_fax.pdf」）。")
+        self.save_button = group.small(
+            "保存", self._on_save, state="disabled", tip=self._save_button_tip)
 
-        group = ribbon.group("変換")
-        self.convert_button = group.large(
-            "変換して出力", self._on_convert, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
-            state="disabled", tip=self._convert_button_tip)
+        group = ribbon.group("ページ")
+        self.add_button = group.large(
+            "追加", self._on_add_pages, state="disabled",
+            tip="PDF・画像（JPEG・PNG）のファイルを選び、そのページを、"
+                "選んでいるページの後ろに入れます（選んでいなければ末尾）。"
+                "ウィンドウへのドラッグ＆ドロップでも追加できます。"
+                "追加したファイル自体は変更しません。")
+        self.delete_button = group.small(
+            "削除", self._delete_pages, state="disabled", tip=self._delete_button_tip)
+        # 回転は、1つのボタンにまとめ、角度をメニューで選ぶ（2026-11-17 班長指示）
+        self.rotate_button = group.dropdown(
+            "回転", [(label, lambda d=degrees: self._rotate_pages(d)) for label, degrees in _ROTATIONS],
+            state="disabled",
+            tip="選んでいるページを回します。"
+                "押すと、角度（左に90°・右に90°・180°）を選ぶメニューが開きます。")
+        group.new_column()
+        self.undo_button = group.small(
+            "元に戻す", self._on_undo, state="disabled",
+            tip="ページの編集（追加・削除・並べ替え・回転）を、1つ戻します（Ctrl+Z）。")
+        self.redo_button = group.small(
+            "やり直す", self._on_redo, state="disabled",
+            tip="元に戻したページの編集を、やり直します（Ctrl+Y）。")
 
-        group = ribbon.group("出力")
-        self.output_button = group.small(
-            "出力先...", self._browse_output,
-            tip="出力するPDFファイルの保存先フォルダとファイル名を指定します。"
-                "ここでの変更は、この変換のかぎりです"
-                "（次にファイルを選び直すと、変換の既定設定の方針から決め直します）。")
-        self.open_folder_button = group.small(
-            "出力フォルダを開く", self._open_output_folder, state="disabled",
-            tip="変換したPDFファイルの入っているフォルダを開きます。"
-                "変換が終わると押せるようになります。")
+    def _save_unavailable_reason(self) -> str:
+        """保存のボタンが押せない理由（押せるときは空）。"""
+        if self.document is None:
+            return "ファイルを開くと押せるようになります。"
+        if self._saving:
+            return "保存しています。終わるまでお待ちください。"
+        if self.diagnosis is None:
+            return "診断が終わると押せるようになります。"
+        return ""
 
-    def _convert_button_tip(self) -> str:
-        """「変換して出力」ボタンの説明書き（押せないときは、その理由を示す）。"""
-        if str(self.convert_button.cget("state")) == "disabled":
-            return ("入力ファイルを選ぶと押せるようになります。"
-                    "選択中の処理内容でPDFを画像化し、出力ファイルに保存します。")
-        return ("選択中の処理内容でPDFを画像化し、出力ファイルに保存します。"
-                "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
+    def _save_as_button_tip(self) -> str:
+        """［名前を付けて保存］ボタンの説明書き（押せないときは、その理由を示す）。"""
+        return self._save_unavailable_reason() + (
+            "選択中の処理内容（画像への変換など）を行って、場所と名前を指定して保存します"
+            "（Ctrl+Shift+S）。開いたファイルは変わりません。"
+            "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
+
+    def _save_button_tip(self) -> str:
+        """［保存］ボタンの説明書き（押せないときは、その理由を示す）。"""
+        return self._save_unavailable_reason() + (
+            "選択中の処理内容（画像への変換など）を行って、開いたファイルに上書き保存します（Ctrl+S）。"
+            "押すたびに、上書きしてよいかを確かめます。"
+            "元のファイルを残したいときは、［名前を付けて保存］を使ってください。")
+
+    def _delete_button_tip(self) -> str:
+        """［削除］ボタンの説明書き（押せないときは、その理由を示す）。"""
+        base = "選んでいるページを、文書から取り除きます（Deleteキー）。元のファイルは変更しません。"
+        if self.document is not None and self.document.page_count <= 1:
+            return "最後の1ページは削除できません。" + base
+        return base
 
     def _build_options(self, parent: tk.Misc) -> None:
-        # 選択肢の数が少ない項目から順に並べる：圧縮方式→容量超過→用紙正規化→変換レポート。
+        # 選択肢の数が少ない項目から順に並べる：圧縮方式→容量超過→用紙正規化。
         ttk.Label(parent, text="圧縮方式：").grid(
             row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(4, 0))
 
-        ttk.Radiobutton(parent, text="二値化（白黒・G4圧縮）", variable=self.mode_var, value="binarize",
+        ttk.Radiobutton(parent, text=_MODE_BINARIZE_TEXT, variable=self.mode_var, value="binarize",
                         command=self._update_mode_widgets).grid(row=1, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ カラー・階調情報が失われますが、FAXで最も一般的な原稿形式です。",
                   foreground=theme.COLOR_MUTED).grid(row=1, column=1, columnspan=2, sticky="w")
@@ -964,7 +1072,7 @@ class VaFaxApp(TkinterDnD.Tk):
             values=list(_DITHER_LABELS.values()))
         self.dither_combo.grid(row=2, column=1, sticky="w")
 
-        ttk.Radiobutton(parent, text="グレースケール（JPEG圧縮）", variable=self.mode_var, value="grayscale",
+        ttk.Radiobutton(parent, text=_MODE_GRAYSCALE_TEXT, variable=self.mode_var, value="grayscale",
                         command=self._update_mode_widgets).grid(row=3, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ サービス側で黒つぶれ・白飛びが起こる場合があります。"
                               "実際に送信してご確認ください。", foreground=theme.COLOR_MUTED).grid(
@@ -976,51 +1084,80 @@ class VaFaxApp(TkinterDnD.Tk):
             values=_QUALITY_LABELS)
         self.quality_combo.grid(row=4, column=1, sticky="w")
 
+        # 「何もしない」（F-11。2026-11-17 班長指示）：ページを画像にせず、そのまま保存する
+        ttk.Radiobutton(parent, text=_NOTHING_TEXT, variable=self.mode_var, value="none",
+                        command=self._update_mode_widgets).grid(row=5, column=0, sticky="w", padx=8)
+        ttk.Label(parent, text="※ ページを画像にしません。文字データ・カラーが残り、"
+                              "サービスによっては送信できない場合があります。",
+                  foreground=theme.COLOR_MUTED).grid(row=5, column=1, columnspan=2, sticky="w")
+
         ttk.Label(parent, text="容量超過時の処理方式：").grid(
-            row=5, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+            row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
 
         self.reduce_resolution_radio = ttk.Radiobutton(
-            parent, text="解像度・品質を下げて再実行", variable=self.capacity_method_var,
+            parent, text=_CAPACITY_REDUCE_TEXT, variable=self.capacity_method_var,
             value="reduce_resolution", command=self._update_strategy_combo_state)
-        self.reduce_resolution_radio.grid(row=6, column=0, sticky="w", padx=8)
+        self.reduce_resolution_radio.grid(row=7, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ 送信回数を増やさずに済みます。", foreground=theme.COLOR_MUTED).grid(
-            row=6, column=1, columnspan=2, sticky="w")
+            row=7, column=1, columnspan=2, sticky="w")
 
-        ttk.Label(parent, text="　削減方式：").grid(row=7, column=0, sticky="e", padx=(24, 0))
+        ttk.Label(parent, text="　削減方式：").grid(row=8, column=0, sticky="e", padx=(24, 0))
         self.strategy_combo = ttk.Combobox(
             parent, textvariable=self.reduction_strategy_label_var, state="readonly", width=12,
             values=list(_REDUCTION_STRATEGY_LABELS.values()))
-        self.strategy_combo.grid(row=7, column=1, sticky="w")
+        self.strategy_combo.grid(row=8, column=1, sticky="w")
 
         self.split_radio = ttk.Radiobutton(
-            parent, text="分割して再実行", variable=self.capacity_method_var,
+            parent, text=_CAPACITY_SPLIT_TEXT, variable=self.capacity_method_var,
             value="split", command=self._update_strategy_combo_state)
-        self.split_radio.grid(row=8, column=0, sticky="w", padx=8)
+        self.split_radio.grid(row=9, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ 画質を下げずに済みます。", foreground=theme.COLOR_MUTED).grid(
-            row=8, column=1, columnspan=2, sticky="w")
+            row=9, column=1, columnspan=2, sticky="w")
 
-        tk.Checkbutton(
-            parent, text="用紙正規化（用紙サイズ・方向が対応外のページを自動で修正します）",
-            variable=self.normalize_var,
-        ).grid(row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+        # 「何もしない」（F-13。2026-11-17 班長指示）：上限を超えていても、そのまま保存する
+        ttk.Radiobutton(
+            parent, text=_NOTHING_TEXT, variable=self.capacity_method_var,
+            value="none", command=self._update_strategy_combo_state).grid(
+            row=10, column=0, sticky="w", padx=8)
+        ttk.Label(parent, text="※ 上限を超えていても、そのまま保存します（保存の後に知らせます）。",
+                  foreground=theme.COLOR_MUTED).grid(row=10, column=1, columnspan=2, sticky="w")
 
-        tk.Checkbutton(
-            parent, text="変換レポートを出力先フォルダに保存する",
-            variable=self.report_var,
-        ).grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+        self.normalize_check = tk.Checkbutton(parent, text=_NORMALIZE_TEXT, variable=self.normalize_var)
+        self.normalize_check.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+
+        # 圧縮方式が「何もしない」のときに、効かない項目を選べなくしている理由（F-11）
+        self.none_note_var = tk.StringVar()
+        ttk.Label(parent, textvariable=self.none_note_var, foreground=theme.COLOR_MUTED,
+                  justify="left").grid(row=12, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
         self._update_mode_widgets()
-        self._update_strategy_combo_state()
 
     def _update_strategy_combo_state(self) -> None:
         """削減方式は、「解像度を下げて再実行」を選択している場合のみ選択可能とする。"""
-        enabled = self.capacity_method_var.get() == "reduce_resolution"
+        enabled = (self.capacity_method_var.get() == "reduce_resolution"
+                   and self.mode_var.get() != "none")
         self.strategy_combo.configure(state="readonly" if enabled else "disabled")
 
     def _update_mode_widgets(self) -> None:
-        is_binarize = self.mode_var.get() == "binarize"
-        self.dither_combo.configure(state="readonly" if is_binarize else "disabled")
-        self.quality_combo.configure(state="disabled" if is_binarize else "readonly")
+        """圧縮方式に応じて、詳細設定と、効かない項目の選べる・選べないを切り替える（F-11）。"""
+        mode = self.mode_var.get()
+        nothing = mode == "none"
+        self.dither_combo.configure(state="readonly" if mode == "binarize" else "disabled")
+        self.quality_combo.configure(state="readonly" if mode == "grayscale" else "disabled")
+        if nothing:
+            # 「解像度・品質を下げて再実行」は効かないので、「何もしない」に切り替える
+            if self.capacity_method_var.get() == "reduce_resolution":
+                self._capacity_switched_for_none = True
+                self.capacity_method_var.set("none")
+        elif self._capacity_switched_for_none:
+            # 圧縮方式を戻したら、容量超過時の処理方式も元に戻す
+            self._capacity_switched_for_none = False
+            if self.capacity_method_var.get() == "none":
+                self.capacity_method_var.set("reduce_resolution")
+        self.reduce_resolution_radio.configure(state="disabled" if nothing else "normal")
+        self.normalize_check.configure(state="disabled" if nothing else "normal")
+        self.none_note_var.set(_NONE_MODE_NOTE if nothing else "")
+        self._update_strategy_combo_state()
 
     # ------------------------------------------------------------------ プレビュー（F-30）
 
@@ -1049,680 +1186,489 @@ class VaFaxApp(TkinterDnD.Tk):
         )
 
     def _on_preview_options_changed(self, *_args) -> None:
-        if not self.input_paths:
+        if self.document is None:
             return
+        if not self._applying_defaults:
+            # 処理の選択を変えたら、未保存とする（F-15）
+            self._dirty = True
+            self._update_title()
         self.preview_pane.update_options(self._current_preview_options())
 
-    # ------------------------------------------------------------------ 入力ファイル選択・診断
+    # ------------------------------------------------------------------ キー操作
 
-    def _browse_input(self) -> None:
-        initial_dir = self.settings.last_input_dir or str(Path.home())
-        # 入力済みの状態で再度開いた場合は「追加」となる（F-01。送信票の後に本文を
-        # 追加する運用）。ダイアログ自体も複数選択に対応する。
-        title = "追加するPDFファイルを選択" if self.input_paths else "変換するPDFファイルを選択"
-        path_strs = filedialog.askopenfilenames(
-            title=title,
-            initialdir=initial_dir,
-            filetypes=[("PDFファイル", "*.pdf")],
-        )
-        if path_strs:
-            self._add_input_paths([Path(p) for p in path_strs])
-
-    def _on_drop_input_file(self, event) -> None:
-        paths = _parse_dropped_paths(event.data)
-        if paths:
-            self._add_input_paths([Path(p) for p in paths])
-
-    def _add_input_paths(self, new_paths: list[Path]) -> None:
-        """入力ファイル一覧の末尾にファイルを追加する（「入力元」・D&D共通。F-01）。"""
-        non_pdf = [p.name for p in new_paths if p.suffix.lower() != ".pdf"]
-        if non_pdf:
-            messagebox.showerror(
-                "VA FAX", "PDFファイル以外は入力できません：\n" + "、".join(non_pdf))
-        pdfs = [p for p in new_paths if p.suffix.lower() == ".pdf"]
-        if not pdfs:
-            return
-        if not self._confirm_adding_many_files(pdfs):
-            return
-
-        self.settings.last_input_dir = str(pdfs[-1].parent)
-        save_settings(self.settings)
-        self._set_input_paths(self.input_paths + pdfs)
-
-    def _confirm_adding_many_files(self, pdfs: list[Path]) -> bool:
-        """一度の操作で多数件を追加する場合の確認（誤って大量ドロップした場合の歯止め）。"""
-        if len(pdfs) <= CONFIRM_INPUT_FILES_THRESHOLD:
-            return True
-        total = len(self.input_paths) + len(pdfs)
-        return messagebox.askyesno(
-            "VA FAX",
-            f"{len(pdfs)}件のファイルを追加し、合計{total}件を結合します。よろしいですか？",
-        )
-
-    def _refresh_input_text(self) -> None:
-        """入力ファイル欄の表示をself.input_pathsから作り直す（1行1ファイル）。"""
-        self.input_text.delete("1.0", "end")
-        if self.input_paths:
-            self.input_text.configure(foreground=self._input_text_default_fg)
-            self.input_text.insert("1.0", "\n".join(str(p) for p in self.input_paths))
-        else:
-            self.input_text.configure(foreground=_PLACEHOLDER_COLOR)
-            self.input_text.insert("1.0", _INPUT_PLACEHOLDER_TEXT)
-
-    def _on_input_text_key(self, event) -> Optional[str]:
-        """入力ファイル欄のキー操作を制限する（A-2）。
-
-        削除・カット・コピー・ペーストはいずれも「選択中の行」に対する操作とし、
-        矢印キー等は選択行そのものを動かす（行単位の一覧として扱い、操作対象が
-        常に反転表示で見えている状態を保つ）。文字の挿入・部分削除は一切
-        受け付けない（表示中の一覧と実際の変換対象self.input_pathsの食い違いを防ぐ）。
-        """
-        keysym = event.keysym
-        extend = bool(event.state & 0x1)  # Shift併用（選択範囲の拡張）
-        if keysym in ("Delete", "BackSpace"):
-            self._delete_selected_input_lines()
-            return "break"
-        if keysym in _INPUT_SELECTION_MOVE_KEYSYMS:
-            self._move_input_selection(keysym, extend)
-            return "break"
-        if keysym == "Tab":
-            # Textのタブは文字挿入となるため、通常のフォーカス移動に置き換える。
-            event.widget.tk_focusNext().focus_set()
-            return "break"
-        if event.state & self._shortcut_state_mask:
-            # Ctrl+X／C／Vは通常<<Cut>>等の仮想イベント側で処理される（同一バインド
-            # タグ内で<Key>より優先されるため）が、環境差に備えてここでも受ける。
-            key = keysym.lower()
-            if key == "x":
-                return self._on_input_cut()
-            if key == "c":
-                return self._on_input_copy()
-            if key == "v":
-                return self._on_input_paste()
-            if key == "z":
-                return self._on_input_undo()
-            if key == "a":
-                if self.input_paths:
-                    self._set_input_selection(1, len(self.input_paths))
-                return "break"
-        return "break"
-
-    # -------------------------------------------------- 入力ファイル欄の行選択
-
-    def _selected_input_lines(self) -> Optional[tuple[int, int]]:
-        """選択中の行の範囲を（開始行, 終了行）で返す（1始まり・両端含む）。未選択はNone。"""
-        if not self.input_paths or self._sel_anchor is None or self._sel_active is None:
-            return None
-        start, end = sorted((self._sel_anchor, self._sel_active))
-        return start, end
-
-    def _set_input_selection(self, anchor: Optional[int], active: Optional[int] = None) -> None:
-        """選択行を設定し、反転表示を更新する（anchor=Noneで選択解除）。
-
-        anchorは選択の起点、activeはShift＋クリック／矢印キーで動かす側の端。
-        いずれも1始まりの行番号で、一覧の範囲内に丸める。
-        """
-        if anchor is None or not self.input_paths:
-            self._sel_anchor = self._sel_active = None
-        else:
-            last = len(self.input_paths)
-            self._sel_anchor = max(1, min(anchor, last))
-            self._sel_active = max(1, min(anchor if active is None else active, last))
-        self._refresh_input_selection_display()
-
-    def _refresh_input_selection_display(self) -> None:
-        text = self.input_text
-        text.tag_remove("sel", "1.0", "end")
-        selection = self._selected_input_lines()
-        if selection is None:
-            return
-        start, end = selection
-        text.tag_add("sel", f"{start}.0", f"{end}.end")
-        # 挿入カーソルは表示していない（幅0）が、選択の移動端に合わせておく。
-        text.mark_set("insert", f"{self._sel_active}.0")
-        text.see(f"{self._sel_active}.0")
-
-    def _visible_input_line_count(self) -> int:
-        """入力ファイル欄に一度に表示できる行数（PageUp／PageDownの移動量）。"""
-        bbox = self.input_text.bbox("1.0")
-        line_height = bbox[3] if bbox and bbox[3] else 0
-        if line_height <= 0:
-            return 1
-        return max(1, self.input_text.winfo_height() // line_height)
-
-    def _move_input_selection(self, keysym: str, extend: bool) -> None:
-        """矢印キー等で選択行を動かす（extend=TrueのShift併用時は範囲を広げる）。"""
-        if not self.input_paths:
-            return
-        last = len(self.input_paths)
-        selection = self._selected_input_lines()
-        if selection is None:
-            # 未選択からの操作は、上方向なら末尾、下方向なら先頭を選ぶ。
-            self._set_input_selection(last if keysym in ("Up", "Prior", "End") else 1)
-            return
-
-        current = self._sel_active or selection[0]
-        page = self._visible_input_line_count()
-        moves = {
-            "Up": current - 1, "Down": current + 1,
-            "Prior": current - page, "Next": current + page,
-            "Home": 1, "End": last,
-        }
-        target = max(1, min(moves[keysym], last))
-        self._set_input_selection(self._sel_anchor if extend else target, target)
-
-    def _delete_selected_input_lines(self) -> None:
-        """選択中の行のファイルを一覧から取り除く（未選択のときは何もしない）。"""
-        selection = self._selected_input_lines()
-        if selection is None:
-            return
-        start_line, end_line = selection
-        removed = set(range(start_line - 1, end_line))
-        self._set_input_paths(
-            [p for i, p in enumerate(self.input_paths) if i not in removed])
-
-    # -------------------------------------------------- 入力ファイル欄の行ドラッグ（並べ替え）
-
-    def _input_line_at(self, y: int) -> Optional[int]:
-        """入力ファイル欄のy座標にある行番号（1始まり）を返す。
-
-        最終行より下の余白（ファイルのない領域）を指した場合はNoneを返す。
-        """
-        line = int(self.input_text.index(f"@0,{y}").split(".")[0])
-        if line > len(self.input_paths):
-            return None
-        bbox = self.input_text.bbox(f"{line}.0")
-        if bbox is not None and y > bbox[1] + bbox[3]:
-            return None
-        return max(1, line)
-
-    def _input_drop_index_at(self, y: int) -> int:
-        """入力ファイル欄のy座標が指す挿入位置（行と行の境界。0始まり）を返す。
-
-        行の上半分なら その行の前、下半分なら その行の後を挿入位置とし、
-        最終行より下の余白は末尾（＝一覧の最後）とする。
-        """
-        line = self._input_line_at(y)
-        if line is None:
-            return len(self.input_paths)
-        bbox = self.input_text.bbox(f"{line}.0")
-        if bbox is None:
-            return line - 1
-        _x, top, _width, height = bbox
-        return line - 1 if y < top + height / 2 else line
-
-    def _on_input_drag_press(self, event) -> Optional[str]:
-        """入力ファイル欄の押下：クリックした行を選択し、ドラッグで動かす行を決める。"""
-        self._drag_block = None
-        self._shift_selecting = False
-        self.input_text.focus_set()
-        if not self.input_paths:
-            # プレースホルダー表示中は操作対象がない。
-            return "break"
-
-        line = self._input_line_at(event.y)
-        if line is None:
-            # 最終行より下の余白をクリックした場合は選択を解除する。
-            self._set_input_selection(None)
-            return "break"
-
-        if event.state & 0x1:
-            # Shift併用時は選択範囲の拡張（起点は保ったまま、押した行まで広げる）。
-            self._shift_selecting = True
-            self._set_input_selection(
-                self._sel_anchor if self._sel_anchor is not None else line, line)
-            return "break"
-
-        selection = self._selected_input_lines()
-        if selection is not None and selection[0] <= line <= selection[1]:
-            # 選択中の塊の中を押した場合は、その塊全体を動かす（ドラッグにならず
-            # クリックで終わった場合は、離した時点で押した行だけの選択に戻す）。
-            self._drag_block = selection
-        else:
-            self._set_input_selection(line)
-            self._drag_block = (line, line)
-        self._drag_press_line = line
-        self._drag_origin_x = event.x
-        self._drag_origin_y = event.y
-        self._drag_pointer_x = event.x
-        self._drag_pointer_y = event.y
-        self._dragging = False
-        return "break"
-
-    def _on_input_drag_motion(self, event) -> Optional[str]:
-        if self._shift_selecting:
-            # Shift＋ドラッグ：ポインタが通った行まで選択範囲を広げる。
-            line = self._input_line_at(event.y)
-            if line is None:
-                line = len(self.input_paths) if event.y > 0 else 1
-            self._set_input_selection(self._sel_anchor, line)
-            return "break"
-        if self._drag_block is None:
-            return None
-        if not self._dragging:
-            # 縦横いずれかに動いた時点でドラッグとみなす（欄の外へ真横に持ち出して
-            # 取り除く操作も受け付けるため、縦方向だけでは判定しない）。
-            if (max(abs(event.x - self._drag_origin_x), abs(event.y - self._drag_origin_y))
-                    < _INPUT_DRAG_THRESHOLD_PX):
-                return "break"
-            self._dragging = True
-            self.input_text.configure(cursor="hand2")
-            self._set_input_selection(*self._drag_block)
-
-        self._drag_pointer_x = event.x
-        self._drag_pointer_y = event.y
-        if self._is_outside_input_text(event.x, event.y):
-            # 欄の外へ持ち出している間は「離すと一覧から取り除く」ことを、挿入位置の
-            # 線を消し、カーソルを×印に変えて示す。
-            self._drop_indicator.place_forget()
-            self.input_text.configure(cursor=self._remove_cursor)
-            return "break"
-
-        self.input_text.configure(cursor="hand2")
-        self._update_drop_indicator(event.y)
-        height = self.input_text.winfo_height()
-        if event.y < _INPUT_DRAG_EDGE_PX or event.y > height - _INPUT_DRAG_EDGE_PX:
-            self._schedule_drag_scroll()
-        return "break"
-
-    def _on_input_drag_leave(self, _event=None) -> Optional[str]:
-        """ドラッグ中に欄の外へ出たとき、Text既定の自動スキャンを開始させない。
-
-        Tkは<B1-Leave>でtk::TextAutoScan（50ms間隔で選択範囲を拡張し続けるループ）を
-        始め、これを止めるのはTextクラスの<ButtonRelease-1>バインド（tk::CancelRepeat）
-        だが、この欄では並べ替えのため独自の<ButtonRelease-1>で"break"しており、
-        そのままではループが止まらない。結果、欄外へのドロップで削除した後も残った行が
-        選択され続け、Escapeやクリックで解除しても50ms後に付け直されてしまう。
-        """
-        if self._drag_block is None:
-            return None
-        return "break"
-
-    def _is_outside_input_text(self, x: int, y: int) -> bool:
-        """ドラッグ中のポインタが入力ファイル欄の外へ持ち出されているかを返す。
-
-        欄の縁ぎりぎりでの取りこぼし（末尾へ移動しようとして少しはみ出した等）を
-        削除と誤判定しないよう、縁から余裕（_INPUT_DRAG_OUTSIDE_MARGIN_PX）を取り、
-        そこを明確に越えた場合のみ「外」とする。
-        """
-        margin = _INPUT_DRAG_OUTSIDE_MARGIN_PX
-        return (
-            x < -margin
-            or y < -margin
-            or x > self.input_text.winfo_width() + margin
-            or y > self.input_text.winfo_height() + margin
-        )
-
-    def _on_input_drag_release(self, event) -> Optional[str]:
-        if self._shift_selecting:
-            self._shift_selecting = False
-            return "break"
-        if self._drag_block is None:
-            return None
-        start_line, end_line = self._drag_block
-        was_dragging = self._dragging
-        outside = self._is_outside_input_text(event.x, event.y)
-        self._end_input_drag()
-        if not was_dragging:
-            # 動かさずに離した場合は通常のクリックとして扱い、押した行だけの選択に戻す。
-            self._set_input_selection(self._drag_press_line)
-            return "break"
-
-        if outside:
-            # 欄の外へ放した場合は、その行のファイルを一覧から取り除く（Deleteキーに
-            # よる削除と同じ扱い。入力ファイル自体には手を触れない〔F-03〕。誤って
-            # 放した場合はCtrl+Zで戻せる）。
-            self._delete_selected_input_lines()
-            return "break"
-
-        drop_index = self._input_drop_index_at(event.y)
-        if start_line - 1 <= drop_index <= end_line:
-            # 元の位置（動かした塊自身の範囲内）へのドロップは並べ替えにならない。
-            self._set_input_selection(start_line, end_line)
-            return "break"
-
-        paths, insert_at = _move_input_paths(
-            self.input_paths, start_line - 1, end_line - 1, drop_index)
-        self._set_input_paths(paths)
-        self._set_input_selection(insert_at + 1, insert_at + (end_line - start_line + 1))
-        return "break"
-
-    def _on_input_escape(self, _event=None) -> str:
-        """Escape：ドラッグ中なら並べ替え（取り除き）を取りやめ、行の選択を解除する。"""
-        if self._drag_block is not None:
-            self._end_input_drag()
-        self._shift_selecting = False
-        self._set_input_selection(None)
-        return "break"
-
-    def _end_input_drag(self) -> None:
-        """ドラッグ状態（挿入位置の線・カーソル形状・自動スクロール）を後始末する。"""
-        self._drag_block = None
-        self._dragging = False
-        self._drop_indicator.place_forget()
-        self.input_text.configure(cursor=self._input_text_default_cursor)
-        if self._drag_scroll_after_id is not None:
-            self.after_cancel(self._drag_scroll_after_id)
-            self._drag_scroll_after_id = None
-        # Text既定の自動スキャンが動き出していた場合に備えて止める（_on_input_drag_leave
-        # で通常は開始されないが、修飾キー併用時等の取りこぼしに対する保険。Textクラスの
-        # <ButtonRelease-1>が行っている後始末と同じ処理）。
-        try:
-            self.tk.call("tk::CancelRepeat")
-        except tk.TclError:
-            pass
-
-    def _update_drop_indicator(self, y: int) -> None:
-        """挿入位置を示す線を、ドロップ先の行境界に合わせて表示する。"""
-        text = self.input_text
-        drop_index = self._input_drop_index_at(y)
-        if drop_index < len(self.input_paths):
-            bbox = text.bbox(f"{drop_index + 1}.0")
-            line_y = bbox[1] if bbox else 0
-        else:
-            bbox = text.bbox(f"{len(self.input_paths)}.0")
-            line_y = bbox[1] + bbox[3] if bbox else text.winfo_height()
-        line_y = max(0, min(line_y, text.winfo_height() - 2))
-        self._drop_indicator.place(in_=text, x=0, y=line_y, relwidth=1.0, height=2)
-        self._drop_indicator.lift()
-
-    def _schedule_drag_scroll(self) -> None:
-        if self._drag_scroll_after_id is None:
-            self._drag_scroll_after_id = self.after(
-                _INPUT_DRAG_SCROLL_INTERVAL_MS, self._on_drag_scroll_tick)
-
-    def _on_drag_scroll_tick(self) -> None:
-        """ドラッグ中、ポインタが欄の上端・下端にある間は一覧を自動スクロールする。"""
-        self._drag_scroll_after_id = None
-        if not self._dragging or self._is_outside_input_text(
-                self._drag_pointer_x, self._drag_pointer_y):
-            return
-        y = self._drag_pointer_y
-        height = self.input_text.winfo_height()
-        if y < _INPUT_DRAG_EDGE_PX:
-            self.input_text.yview_scroll(-1, "units")
-        elif y > height - _INPUT_DRAG_EDGE_PX:
-            self.input_text.yview_scroll(1, "units")
-        else:
-            return
-        self._update_drop_indicator(y)
-        self._schedule_drag_scroll()
-
-    def _on_input_copy(self, _event=None) -> str:
-        """選択中の行のパスをクリップボードへコピーする（未選択のときは何もしない）。"""
-        self._copy_input_lines_to_clipboard()
-        return "break"
-
-    def _copy_input_lines_to_clipboard(self) -> list[Path]:
-        selection = self._selected_input_lines()
-        if selection is None:
-            return []
-        start_line, end_line = selection
-        paths = self.input_paths[start_line - 1:end_line]
-        if paths:
-            self.clipboard_clear()
-            self.clipboard_append("\n".join(str(p) for p in paths))
-        return paths
-
-    def _on_input_cut(self, _event=None) -> str:
-        """行単位のカット（コピー＋一覧からの削除）。ペーストと組み合わせて並べ替えに使う。"""
-        copied = self._copy_input_lines_to_clipboard()
-        if copied:
-            self._delete_selected_input_lines()
-        return "break"
-
-    def _on_input_paste(self, _event=None) -> str:
-        """クリップボードのパス（1行1ファイル）を選択中の行の前に挿入する。
-
-        何も選択していない場合は一覧の末尾に追加する。この欄からカット・コピー
-        した内容のほか、エクスプローラーの「パスのコピー」等で取得したPDFファイルの
-        パスも貼り付けられる。
-        """
-        try:
-            text = self.clipboard_get()
-        except tk.TclError:
-            return "break"
-
-        lines = [line.strip().strip('"') for line in text.splitlines()]
-        lines = [line for line in lines if line]
-        if not lines:
-            return "break"
-
-        paths = []
-        for line in lines:
-            path = Path(line)
-            if path.suffix.lower() != ".pdf" or not path.is_file():
-                messagebox.showerror(
-                    "VA FAX",
-                    "貼り付けられた内容をPDFファイルのパスとして認識できませんでした。\n"
-                    "貼り付けできるのは、この欄でカット（Ctrl+X）・コピー（Ctrl+C）した行、"
-                    "または実在するPDFファイルのパス（1行1ファイル）のみです。",
-                )
-                return "break"
-            paths.append(path)
-
-        if not self._confirm_adding_many_files(paths):
-            return "break"
-
-        selection = self._selected_input_lines()
-        insert_at = len(self.input_paths) if selection is None else selection[0] - 1
-        self._set_input_paths(self.input_paths[:insert_at] + paths + self.input_paths[insert_at:])
-        # 貼り付けた行を選択状態にして、どこへ入ったかを示す。
-        self._set_input_selection(insert_at + 1, insert_at + len(paths))
-        return "break"
+    def _bind_keys(self) -> None:
+        """メイン画面のどこにフォーカスがあっても効くキー操作（F-32・F-33）。大文字は、
+        キャップスロック中・Shift併用の取りこぼし対策。"""
+        for sequence, handler in (
+            ("<Control-z>", self._on_undo), ("<Control-Z>", self._on_undo),
+            ("<Control-y>", self._on_redo), ("<Control-Y>", self._on_redo),
+            ("<Control-o>", self._on_open), ("<Control-O>", self._on_open),
+            ("<Control-s>", self._on_save),
+            ("<Control-Shift-S>", self._on_save_as), ("<Control-Shift-s>", self._on_save_as),
+        ):
+            self.bind_all(sequence, lambda event, h=handler: self._on_global_key(event, h), add="+")
 
     def _bind_mac_keys(self) -> None:
         """Mac（ソースから動かす場合。N-03）のキー操作を、Windowsのキー操作にそろえる。
 
-        - ⌘Z：Ctrl+Zと同じく、メイン画面のどこからでも入力ファイル一覧の取り消しにする
-          （⌘C・⌘X・⌘V・⌘Zは、入力ファイル欄ではTkの<<Copy>>等の仮想イベントとして届く）。
-        - ⌘Q：Tkの既定ではTclのexitで直ちにプロセスを終えるため、プレビューの描画
-          スレッドの後始末（PreviewPane.destroy）を通らない。閉じるボタンと同じく
-          ウィンドウを破棄して終える。
+        ⌘Z・⌘Y・⌘O・⌘S・⌘⇧S を、Ctrl と同じ働きにする。⌘Q は、Tkの既定ではTclのexitで
+        直ちにプロセスを終えるため、未保存の確認とプレビューの描画スレッドの後始末を通らない。
+        閉じるボタンと同じ処理にする。
         """
-        self.bind_all("<Command-z>", self._on_global_undo, add="+")
-        self.bind_all("<Command-Z>", self._on_global_undo, add="+")
-        self.createcommand("::tk::mac::Quit", self.destroy)
+        for sequence, handler in (
+            ("<Command-z>", self._on_undo), ("<Command-Z>", self._on_undo),
+            ("<Command-y>", self._on_redo), ("<Command-Y>", self._on_redo),
+            ("<Command-o>", self._on_open), ("<Command-s>", self._on_save),
+            ("<Command-Shift-S>", self._on_save_as), ("<Command-Shift-s>", self._on_save_as),
+        ):
+            self.bind_all(sequence, lambda event, h=handler: self._on_global_key(event, h), add="+")
+        self.createcommand("::tk::mac::Quit", self._on_quit)
 
-    def _on_global_undo(self, event) -> Optional[str]:
-        """アプリ全体のCtrl+Zを入力ファイル一覧の取り消しとして処理する。
-
-        入力ファイル欄自身にフォーカスがある場合は、ウィジェット側のバインド
-        （_on_input_text_key・<<Undo>>）が先に処理して"break"するため、ここには
-        届かない。他ウィジェットの編集操作と紛らわしくなるのを避けるため、
-        文字入力欄（出力ファイル欄等のEntry）と、別ウィンドウ（設定ダイアログ等）
-        での押下は対象外とする。
-        """
+    def _on_global_key(self, event, handler: Callable[[], None]) -> Optional[str]:
+        """別ウィンドウ（設定の画面等）での押下は対象外とする。"""
         widget = event.widget
         try:
             if not isinstance(widget, tk.Misc) or widget.winfo_toplevel() is not self:
                 return None
-            if isinstance(widget, (ttk.Entry, tk.Entry)):
-                return None
         except tk.TclError:
             return None
-        return self._on_input_undo()
-
-    def _on_input_undo(self, _event=None) -> str:
-        """入力ファイル一覧への直前の変更（追加・削除・カット・ペースト）を取り消す。
-
-        履歴が残っている限り、Ctrl+Zを繰り返すことでさらに前の状態まで遡れる
-        （進む方向のやり直し〔Redo〕は設けない）。
-        """
-        if self._input_undo_stack:
-            previous = self._input_undo_stack.pop()
-            self._set_input_paths(previous, record_undo=False)
+        handler()
         return "break"
 
-    def _set_input_paths(self, paths: list[Path], record_undo: bool = True) -> None:
-        """入力ファイル一覧を確定し、表示・出力初期値・事前診断・プレビューを更新する。
+    # ------------------------------------------------------------------ 題名・ボタンの状態
 
-        追加・削除・並べ替えのいずれでも呼ばれ、そのたびに事前診断とプレビューを
-        更新する（F-04・F-30）。変更前の一覧はCtrl+Z用の履歴に積む
-        （record_undo=FalseはCtrl+Zによる巻き戻し自身からの呼び出し用）。
-        """
-        if record_undo and paths != self.input_paths:
-            self._input_undo_stack.append(list(self.input_paths))
-            del self._input_undo_stack[:-INPUT_UNDO_LIMIT]
-        self.input_paths = paths
-        self._refresh_input_text()
-        # 表示を作り直すと選択も失われるため、状態も未選択に戻す（並べ替え・貼り付け
-        # のように移動先を示したい操作は、この後で改めて選択し直す）。
-        self._set_input_selection(None)
+    def _document_name(self) -> Optional[str]:
+        if self.document is None:
+            return None
+        if self._save_path is not None:
+            return self._save_path.name
+        return suggested_save_name(self._name_base, self._name_suffix())
 
-        # 前回ファイルの進捗表示（満タンのまま等）が新しい内容に引き継がれないよう初期化する。
+    def _name_suffix(self) -> Optional[str]:
+        """名前の初めの値に付ける文字（付けないならNone。［ファイル］→［オプション］。F-35）。"""
+        return self.settings.save_name_suffix if self.settings.append_fax_to_save_name else None
+
+    def _update_title(self) -> None:
+        self.title(window_title(self._document_name(), self._dirty))
+
+    def _update_command_states(self) -> None:
+        """リボンとメニューのボタンの、押せる・押せないを、いまの状態に合わせる。"""
+        document = self.document
+        idle = not self._saving
+        has_doc = document is not None and idle
+        selected = self.preview_pane.selected_pages() if has_doc else []
+        can_save = has_doc and self.diagnosis is not None and self._assembled is not None
+
+        def state(enabled: bool) -> str:
+            return "normal" if enabled else "disabled"
+
+        self.open_button.configure(state=state(idle))
+        self.open_copy_button.configure(state=state(idle))
+        self.save_button.configure(state=state(can_save))
+        self.save_as_button.configure(state=state(can_save))
+        self.add_button.configure(state=state(has_doc))
+        self.delete_button.configure(
+            state=state(has_doc and bool(selected) and len(selected) < document.page_count))
+        self.rotate_button.configure(state=state(has_doc and bool(selected)))
+        self.undo_button.configure(state=state(has_doc and document.can_undo))
+        self.redo_button.configure(state=state(has_doc and document.can_redo))
+
+        menu = self._file_menu
+        menu.entryconfig("開く...", state=state(idle))
+        menu.entryconfig("コピーして開く...", state=state(idle))
+        menu.entryconfig("保存", state=state(can_save))
+        menu.entryconfig("名前を付けて保存...", state=state(can_save))
+        menu.entryconfig("閉じる", state=state(has_doc))
+        menu.entryconfig("オプション...", state=state(idle))
+
+    # ------------------------------------------------------------------ ファイルを開く（F-32）
+
+    def _paper_mm(self) -> tuple[float, float]:
+        """画像のページの大きさを決めるのに使う用紙（プロファイルの正規化先。F-29・F-34）。"""
+        target = self.profile.normalize_target
+        return (target.width_mm, target.height_mm)
+
+    def _read_source(self, path: Path) -> Optional[Source]:
+        """ファイルを読み、材料にする。読めないときは、画面に知らせてNoneを返す
+        （ログにはファイル名を書かない。F-24）。"""
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            self.logger.info("ファイル読込失敗：%s", type(exc).__name__)
+            messagebox.showerror(
+                APP_NAME,
+                f"「{path.name}」を読み込めませんでした。ファイルが移動・削除されていないか、"
+                "他のアプリで開かれていないかご確認ください。", parent=self)
+            return None
+        try:
+            return document_module.load_source(data, self._paper_mm())
+        except SourceError as exc:
+            self.logger.info("ファイルを材料にできない：%s", type(exc).__name__)
+            messagebox.showerror(APP_NAME, f"「{path.name}」を処理できませんでした。\n{exc}", parent=self)
+            return None
+        except Exception as exc:  # 予期しない例外（F-22）
+            self.logger.error("ファイルの読込で予期しないエラー：%s", _format_exception_for_log(exc))
+            self._errors.record(exc, "ファイルの読込")
+            messagebox.showerror(
+                APP_NAME, f"「{path.name}」の読み込み中に問題が発生しました。\n{CONTACT_NOTICE}", parent=self)
+            return None
+
+    def _initial_open_dir(self) -> str:
+        return self.settings.last_input_dir or str(Path.home())
+
+    def _on_open(self) -> None:
+        if self._saving:
+            return
+        path_str = filedialog.askopenfilename(
+            title="開く", initialdir=self._initial_open_dir(), filetypes=_OPEN_FILETYPES, parent=self)
+        if path_str:
+            self._guard_unsaved(lambda: self._open_path(Path(path_str), as_copy=False))
+
+    def _on_open_copy(self) -> None:
+        if self._saving:
+            return
+        path_str = filedialog.askopenfilename(
+            title="コピーして開く", initialdir=self._initial_open_dir(), filetypes=_OPEN_FILETYPES,
+            parent=self)
+        if path_str:
+            self._guard_unsaved(lambda: self._open_path(Path(path_str), as_copy=True))
+
+    def _open_path(self, path: Path, as_copy: bool, more_paths: Iterable[Path] = ()) -> bool:
+        """ファイルを開いて、新しい文書にする。more_pathsは、続けて後ろに追加するファイル。"""
+        source = self._read_source(path)
+        if source is None:
+            return False
+        document = Document()
+        document.add_source(source)
+        document.clear_history()   # 開く前には戻さない
+
+        # 画像を開いたときは、［コピーして開く］と同じ扱いにする（画像のファイルをPDFで
+        # 書き換えないため。F-32）。
+        untitled = as_copy or source.kind == "image"
+        self.document = document
+        self._save_path = None if untitled else path
+        self._name_base = path
+        self._doc_dir = path.parent
+        self._material_paths = [path]
+        self._added_paths = []
+        self._dirty = untitled     # 名前のない文書は、保存するまで未保存
+        self.diagnosis = None
+        self._assembled = None
+
+        self.settings.last_input_dir = str(path.parent)
+        save_settings(self.settings)
+        # 処理の選択は、ファイルを開いたときに既定設定から決め直す（F-26）。本ツールで保存した
+        # ファイルなら、圧縮方式の初めの値を「何もしない」にする（F-06）。
+        self._apply_defaults_to_screen(made_by_va_fax=document.all_made_by_va_fax())
+        if document.all_made_by_va_fax():
+            self.logger.info("本ツールで保存したファイル：圧縮方式の初めの値を「何もしない」にした")
+        self.logger.info("ファイルを開いた：%dページ（%s）", source.page_count, source.kind)
+        self._set_status(f"ファイルを開きました：{path.name}（{source.page_count}ページ）")
+
+        selection: Iterable[int] = [0]
+        more = list(more_paths)
+        if more:
+            added = self._load_and_add(more, at=None)
+            if added is not None:
+                document.clear_history()
+                selection = [0]
+        self._document_changed(selection, 0)
+        return True
+
+    def _on_close_document(self) -> None:
+        if self.document is not None and not self._saving:
+            self._guard_unsaved(self._close_document)
+
+    def _close_document(self) -> None:
+        self.document = None
+        self._save_path = None
+        self._name_base = None
+        self._material_paths = []
+        self._added_paths = []
+        self._dirty = False
+        self.diagnosis = None
+        self._assembled = None
+        self._diagnosis_token += 1   # 進行中の診断の結果を無効にする
+        self._set_diagnosis_text("")
+        self._set_status("")
         self.progress_var.set(0.0)
         self.progress_bar.grid_remove()
+        self.preview_pane.clear()
+        self._update_title()
+        self._update_command_states()
 
-        if not paths:
-            # 全件削除された場合：診断・プレビューを空に戻し、進行中の診断結果も無効化する。
-            self._diagnosis_token += 1
-            self.diagnosis = None
-            self._set_diagnosis_text("")
-            self.convert_button.configure(state="disabled")
-            self.preview_pane.clear()
-            self._show_output_placeholder()
+    def _on_quit(self) -> None:
+        if self._saving:
+            messagebox.showinfo(APP_NAME, "保存しています。終わるまでお待ちください。", parent=self)
             return
+        self._guard_unsaved(self._quit)
 
-        # 出力初期値は既定設定の方針から自動決定する（F-02）。ファイル名は先頭
-        # （1件目）の入力ファイル名に基づく。画面での手動変更は当該変換限りで、
-        # 一覧が変わるたびにここで再計算される（F-26）。
-        self._set_output_path_text(
-            str(compute_default_output_path(paths[0], self.settings.defaults)))
+    def _quit(self) -> None:
+        self._remember_window_state()
+        self.destroy()
 
-        self._run_diagnosis(list(paths))
+    # ------------------------------------------------------------------ ウィンドウの大きさ・位置（F-23）
 
-    def _set_output_path_text(self, text: str) -> None:
-        """出力ファイル欄へパスを設定する（プレースホルダー表示から通常文字色に戻す）。"""
-        self.output_entry.configure(foreground=self._output_entry_default_fg)
-        self.output_path_var.set(text)
+    def _restore_window_state(self) -> None:
+        """前に閉じたときの大きさ・位置・最大化に戻す。位置がいまの画面の外になるときは、
+        大きさだけを戻す。"""
+        geometry = fit_geometry_to_screen(
+            self.settings.window_geometry, self.winfo_screenwidth(), self.winfo_screenheight())
+        if geometry:
+            self.geometry(geometry)
+            self._normal_geometry = self.settings.window_geometry
+        if self.settings.window_maximized:
+            try:
+                self.state("zoomed")
+            except tk.TclError:  # 「zoomed」のない環境（Mac等）では、そのままにする
+                pass
+        self.bind("<Configure>", self._on_window_configure, add="+")
 
-    def _describe_output_destination(self) -> str:
-        """現在の既定設定（F-26）から、出力先フォルダの説明文を作る（プレースホルダー表示用）。"""
-        d = self.settings.defaults
-        if d.output_folder_policy == "fixed" and d.fixed_output_folder:
-            return d.fixed_output_folder
-        return "入力ファイルと同じフォルダ"
+    def _on_window_configure(self, event) -> None:
+        """最大化していないときの大きさ・位置を覚えておく（最大化したまま閉じても、元の大きさを
+        保存できるように）。"""
+        if event.widget is self and self.state() == "normal":
+            self._normal_geometry = self.geometry()
 
-    def _show_output_placeholder(self) -> None:
-        self.output_entry.configure(foreground=_PLACEHOLDER_COLOR)
-        self.output_path_var.set(self._describe_output_destination())
+    def _remember_window_state(self) -> None:
+        try:
+            self.settings.window_maximized = self.state() == "zoomed"
+            if self._normal_geometry:
+                self.settings.window_geometry = self._normal_geometry
+            save_settings(self.settings)
+        except (tk.TclError, OSError):  # 保存できなくても、終了は続ける
+            pass
 
-    def _on_output_entry_focus_in(self, event=None) -> None:
-        # ttk.Entryのcget("foreground")は文字列ではなくTclの色オブジェクトを返すため、
-        # str()で正規化してから比較する（==で直接比較すると常にFalseになる）。
-        if str(self.output_entry.cget("foreground")) == _PLACEHOLDER_COLOR:
-            self.output_entry.configure(foreground=self._output_entry_default_fg)
-            self.output_path_var.set("")
-
-    def _on_output_entry_focus_out(self, event=None) -> None:
-        if self.output_path_var.get().strip():
+    def _guard_unsaved(self, action: Callable[[], object]) -> None:
+        """未保存の文書があれば、保存するかを尋ねてから、actionを行う（F-32の5）。"""
+        if self.document is None or not self._dirty:
+            action()
             return
-        if self.input_paths:
-            # 入力ファイルは既に選択済みのため、方針から実際の出力パスを再計算する
-            # （F-02。ファイル名は先頭の入力ファイル名に基づく）。
-            self._set_output_path_text(
-                str(compute_default_output_path(self.input_paths[0], self.settings.defaults)))
-        else:
-            self._show_output_placeholder()
+        choice = self._ask_save_changes(self._document_name() or "")
+        if choice == "save":
+            self._on_save(then=action)
+        elif choice == "discard":
+            action()
 
-    def _browse_output(self) -> None:
-        d = self.settings.defaults
-        if d.output_folder_policy == "fixed" and d.fixed_output_folder:
-            initial_dir = d.fixed_output_folder
-        elif self.input_paths:
-            initial_dir = str(self.input_paths[0].parent)
-        else:
-            initial_dir = self.settings.last_input_dir or str(Path.home())
+    def _ask_save_changes(self, name: str) -> Optional[str]:
+        return ask_choice(
+            self, "保存の確認", f"「{name}」への変更を保存しますか？",
+            [("保存する", "save", True), ("保存しない", "discard", False), ("キャンセル", "cancel", False)],
+            cancel_value="cancel")
 
-        # 現在の出力ファイル名をダイアログに初期表示する（毎回の手動入力を不要にする）。
-        # プレースホルダー表示中（出力先方針の説明文でありファイル名ではない）は使わず、
-        # 入力ファイル選択済みなら既定設定から導かれる出力ファイル名を用いる。
-        # cget("foreground")はTclの色オブジェクトを返すためstr()で正規化して比較する
-        # （_on_output_entry_focus_inと同じ注意点）。
-        initial_file = ""
-        if str(self.output_entry.cget("foreground")) != _PLACEHOLDER_COLOR:
-            current = self.output_path_var.get().strip()
-            if current:
-                current_path = Path(current)
-                initial_file = current_path.name
-                if current_path.parent.is_dir():
-                    initial_dir = str(current_path.parent)
-        if not initial_file and self.input_paths:
-            initial_file = compute_default_output_path(self.input_paths[0], d).name
+    # ------------------------------------------------------------------ ドラッグ＆ドロップ
 
-        # 上書き確認は変換実行時に行う（F-02。「分割して再実行」ではここで指定した名前は
-        # 分割時のベース名であり、実際にこの名前で書き込まれるとは限らないため、
-        # ダイアログ側のOS標準の上書き確認は誤解を招く。二重確認の回避も兼ねる）。
-        path_str = filedialog.asksaveasfilename(
-            title="出力先を指定", initialdir=initial_dir, initialfile=initial_file,
-            defaultextension=".pdf", filetypes=[("PDFファイル", "*.pdf")],
-            confirmoverwrite=False,
-        )
-        if path_str:
-            self._set_output_path_text(path_str)
+    def _on_drop_position(self, event) -> str:
+        if self.document is not None and not self._saving:
+            self.preview_pane.external_drop_index(event.x_root, event.y_root)
+        return event.action
 
-    def _run_diagnosis(self, paths: list[Path]) -> None:
-        """事前診断をバックグラウンドスレッドで実行する（B-4。GUIスレッドをブロックしない）。
+    def _on_drop_leave(self, _event=None) -> None:
+        self.preview_pane.hide_drop_indicator()
 
-        トークン（世代番号）を発行し、応答時に照合することで、診断中に入力一覧が
-        変更された場合の古い結果を無視する（B-5。診断対象と変換ボタンの状態の食い違い防止）。
+    def _on_drop(self, event) -> str:
+        paths = [Path(p) for p in _parse_dropped_paths(event.data)]
+        if self.document is None:
+            self.preview_pane.hide_drop_indicator()
+            if paths and not self._saving:
+                self._open_path(paths[0], as_copy=False, more_paths=paths[1:])
+            return event.action
+        at = self.preview_pane.external_drop_index(event.x_root, event.y_root)
+        self.preview_pane.hide_drop_indicator()
+        if paths and not self._saving:
+            self._add_paths(paths, at)
+        return event.action
+
+    # ------------------------------------------------------------------ ページの編集（F-33）
+
+    def _can_edit(self) -> bool:
+        return self.document is not None and not self._saving
+
+    def _page_menu_items(self) -> list[Optional[tuple[str, Callable[[], object], bool]]]:
+        """サムネイルの右クリックメニューの項目（F-33。リボンの「ページ」の組と同じ操作）。
+
+        (文字, 実行する処理, 押せるか) の並び。Noneは区切り線。押せる・押せないは、リボンの
+        ボタンと同じ条件にする。
         """
+        document = self.document
+        can_edit = self._can_edit()
+        selected = self.preview_pane.selected_pages() if can_edit else []
+        has_selection = bool(selected)
+        items: list[Optional[tuple[str, Callable[[], object], bool]]] = [
+            ("追加...", self._on_add_pages, can_edit),
+            ("削除", self._delete_pages, has_selection and len(selected) < document.page_count),
+            None,
+        ]
+        items += [(label, lambda d=degrees: self._rotate_pages(d), has_selection)
+                  for label, degrees in _ROTATIONS]
+        items += [
+            None,
+            ("元に戻す", self._on_undo, can_edit and document.can_undo),
+            ("やり直す", self._on_redo, can_edit and document.can_redo),
+        ]
+        return items
+
+    def _show_page_menu(self, x_root: int, y_root: int) -> None:
+        """サムネイルの右クリックメニューを、ポインタの位置に出す。"""
+        if self.document is None:
+            return
+        menu = tk.Menu(self, tearoff=False)
+        for item in self._page_menu_items():
+            if item is None:
+                menu.add_separator()
+                continue
+            label, command, enabled = item
+            menu.add_command(label=label, command=command, state="normal" if enabled else "disabled")
+        self._page_menu = menu   # 表示している間、破棄されないように持っておく
+        try:
+            menu.tk_popup(x_root, y_root)
+        finally:
+            menu.grab_release()
+
+    def _on_add_pages(self) -> None:
+        if not self._can_edit():
+            return
+        path_strs = filedialog.askopenfilenames(
+            title="追加するファイルを選択", initialdir=self._initial_open_dir(),
+            filetypes=_OPEN_FILETYPES, parent=self)
+        if not path_strs:
+            return
+        selected = self.preview_pane.selected_pages()
+        self._add_paths([Path(p) for p in path_strs], max(selected) + 1 if selected else None)
+
+    def _confirm_adding_many_files(self, count: int) -> bool:
+        """一度の操作で多数件を追加する場合の確認（誤って大量に落とした場合の歯止め）。"""
+        if count <= CONFIRM_ADD_FILES_THRESHOLD:
+            return True
+        return messagebox.askyesno(APP_NAME, f"{count}件のファイルを追加します。よろしいですか？", parent=self)
+
+    def _load_and_add(self, paths: list[Path], at: Optional[int]) -> Optional[range]:
+        """ファイルを読んで、ページの表に足す。読めないファイルは、知らせて飛ばす。
+        1つも足せなかったときはNone。"""
+        assert self.document is not None
+        sources: list[Source] = []
+        loaded: list[Path] = []
+        for path in paths:
+            source = self._read_source(path)
+            if source is not None:
+                sources.append(source)
+                loaded.append(path)
+        if not sources:
+            return None
+        added = self.document.add_sources(sources, at)
+        self._material_paths += loaded
+        self._added_paths += loaded
+        self.settings.last_input_dir = str(loaded[-1].parent)
+        save_settings(self.settings)
+        self.logger.info("ファイルを追加：%d件・%dページ", len(sources), len(added))
+        self._set_status(f"{len(sources)}件のファイル（{len(added)}ページ）を追加しました。")
+        return added
+
+    def _add_paths(self, paths: list[Path], at: Optional[int]) -> None:
+        if not self._can_edit() or not paths:
+            return
+        if not self._confirm_adding_many_files(len(paths)):
+            return
+        added = self._load_and_add(paths, at)
+        if added is not None:
+            self._edited(added, added.start)
+
+    def _delete_pages(self, pages: Optional[list[int]] = None) -> None:
+        if not self._can_edit():
+            return
+        document = self.document
+        pages = self.preview_pane.selected_pages() if pages is None else pages
+        if not pages:
+            return
+        if len(pages) >= document.page_count:
+            messagebox.showinfo(
+                APP_NAME, "すべてのページを削除することはできません（最後の1ページは残ります）。",
+                parent=self)
+            return
+        first = min(pages)
+        if document.delete(pages):
+            self._edited([min(first, document.page_count - 1)])
+
+    def _move_pages(self, pages: list[int], drop_index: int) -> None:
+        if not self._can_edit():
+            return
+        moved = self.document.move(pages, drop_index)
+        if moved is not None:
+            self._edited(moved, moved.start)
+
+    def _rotate_pages(self, degrees: int) -> None:
+        if not self._can_edit():
+            return
+        pages = self.preview_pane.selected_pages()
+        if pages and self.document.rotate(pages, degrees):
+            self._edited(pages, self.preview_pane.active_page())
+
+    def _on_undo(self) -> None:
+        if self._can_edit() and self.document.undo():
+            self._edited(self._clipped_selection())
+
+    def _on_redo(self) -> None:
+        if self._can_edit() and self.document.redo():
+            self._edited(self._clipped_selection())
+
+    def _clipped_selection(self) -> list[int]:
+        count = self.document.page_count
+        kept = [i for i in self.preview_pane.selected_pages() if i < count]
+        return kept or [count - 1]
+
+    def _edited(self, selection: Iterable[int], active: Optional[int] = None) -> None:
+        """ページの表を書き換えた後の更新。"""
+        self._dirty = True
+        self._document_changed(selection, active)
+
+    def _document_changed(self, selection: Optional[Iterable[int]] = None,
+                          active: Optional[int] = None) -> None:
+        """文書（ページの表）が変わった後、題名・ボタン・事前診断・プレビューを更新する
+        （F-04・F-30）。selectionは、更新の後に選択しておくページ。"""
+        if selection is None:
+            selection = self.preview_pane.selected_pages()
+            active = self.preview_pane.active_page()
+        self._pending_selection = (list(selection), active)
+        # 前の保存の進捗表示が残らないよう初期化する
+        self.progress_var.set(0.0)
+        self.progress_bar.grid_remove()
+        self._update_title()
+        self._run_diagnosis()
+        self._update_command_states()
+
+    # ------------------------------------------------------------------ 事前診断（F-04）
+
+    def _run_diagnosis(self) -> None:
+        """ページの表の組み立てと事前診断を、バックグラウンドスレッドで行う（GUIスレッドを
+        ブロックしない）。
+
+        トークン（世代番号）を発行し、応答時に照合することで、診断中に文書が変更された
+        場合の古い結果を無視する（診断対象と［保存］の状態の食い違い防止）。
+        """
+        document = self.document
+        if document is None:
+            return
         self._set_diagnosis_text("診断中です...")
         self.diagnosis = None
-        self.convert_button.configure(state="disabled")
+        self._assembled = None
         self._diagnosis_token += 1
         token = self._diagnosis_token
         profile = self.profile  # 診断中にプロファイルが変更されても、この診断はこの世代の値で行う
-        thread = threading.Thread(target=self._do_diagnose, args=(paths, profile, token), daemon=True)
-        thread.start()
+        # 材料とページの表の写しを渡す（スレッドの側では、文書そのものに触れない）
+        args = (document.sources, document.pages, document.used_source_count(), profile, token)
+        threading.Thread(target=self._do_diagnose, args=args, daemon=True).start()
 
-    def _read_and_merge_inputs(self, paths: list[Path]) -> tuple[Optional[bytes], list[bytes], Optional[str]]:
-        """全入力ファイルを読み込み、1つのPDFへ結合する（診断・変換共通。F-01）。
-
-        戻り値は（結合後バイト列, 各ファイルのバイト列, エラーメッセージ）。
-        失敗時は結合後バイト列がNoneとなり、エラーメッセージに対象ファイル名を含める
-        （画面表示用。ログにはファイル名を記録しない〔F-24〕）。
-        """
-        data_list: list[bytes] = []
-        for index, path in enumerate(paths):
-            try:
-                data_list.append(path.read_bytes())
-            except OSError as exc:
-                self.logger.info("入力ファイル読込失敗（%d件目）：%s", index + 1, type(exc).__name__)
-                return None, data_list, (
-                    f"入力ファイル「{path.name}」を読み込めませんでした。ファイルが移動・削除"
-                    "されていないか、他のアプリで開かれていないかご確認ください。"
-                )
+    def _do_diagnose(self, sources, pages, source_count: int, profile: Profile, token: int) -> None:
         try:
-            merged = merge_module.merge_pdfs(data_list)
-        except merge_module.MergeError as exc:
-            self.logger.info("入力ファイル結合失敗（%d件目）：%s",
-                             exc.file_index + 1, type(exc.__cause__ or exc).__name__)
-            return None, data_list, (
-                f"入力ファイル「{paths[exc.file_index].name}」を処理できませんでした。\n{exc}"
-            )
-        if len(paths) > 1:
-            self.logger.info("入力ファイル：%d件を結合しました", len(paths))
-        return merged, data_list, None
-
-    def _do_diagnose(self, paths: list[Path], profile: Profile, token: int) -> None:
-        merged, _, error_message = self._read_and_merge_inputs(paths)
-        if merged is None:
-            self._message_queue.put({
-                "type": "diagnosis_error", "token": token, "message": error_message,
-            })
-            return
-
-        try:
-            diagnosis = diagnose_module.diagnose(merged, profile)
+            assembled = document_module.assemble(sources, pages)
+            diagnosis = diagnose_module.diagnose(assembled, profile)
         except (diagnose_module.EncryptedPdfError, diagnose_module.CorruptedPdfError) as exc:
-            self.logger.info("診断エラー：%s", exc)
+            self.logger.info("診断エラー：%s", type(exc).__name__)
             self._message_queue.put({"type": "diagnosis_error", "token": token, "message": str(exc)})
             return
         except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログと診断情報にのみ記録
             self.logger.error("診断中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
-            self._errors.record(exc, "事前診断")
+            self._errors.record(exc, "診断")
             self._message_queue.put({
                 "type": "diagnosis_error", "token": token,
                 "message": f"ファイルの診断中に問題が発生しました。\n{CONTACT_NOTICE}",
@@ -1732,7 +1678,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self._log_diagnosis_summary(diagnosis)
         self._message_queue.put({
             "type": "diagnosis_done", "token": token, "diagnosis": diagnosis,
-            "profile": profile, "input_bytes": merged, "input_count": len(paths),
+            "profile": profile, "assembled": assembled, "source_count": source_count,
         })
 
     def _log_diagnosis_summary(self, d: diagnose_module.Diagnosis) -> None:
@@ -1750,37 +1696,41 @@ class VaFaxApp(TkinterDnD.Tk):
                 p.content_type,
             )
 
-    def _apply_defaults_to_screen(self) -> None:
+    def _apply_defaults_to_screen(self, made_by_va_fax: bool = False) -> None:
         """既定設定（F-26）から画面の処理選択を再計算する。
 
-        圧縮方式・用紙正規化とも常に既定設定の固定値を用い、文書内容や事前診断結果
-        による自動推奨は行わない（F-05・F-06）。
+        圧縮方式・用紙正規化とも既定設定の固定値を用い、文書内容や事前診断結果による
+        自動推奨は行わない（F-05・F-06）。ただし、本ツールで二値化・グレースケールにして保存した
+        ファイルを開いたとき（made_by_va_fax）は、二重に変換しないよう、圧縮方式の初めの値を
+        「何もしない」にする（F-06）。
         """
         d = self.settings.defaults
+        self._applying_defaults = True
+        try:
+            self._capacity_switched_for_none = False
+            self.capacity_method_var.set(d.capacity_exceeded_method)
+            self.mode_var.set("none" if made_by_va_fax else _POLICY_TO_MODE.get(d.compression_policy, "binarize"))
+            self.normalize_var.set(d.normalize_enabled)
+            self.dither_label_var.set(_DITHER_LABELS.get(d.dither_method, _DITHER_LABELS["auto"]))
+            self.quality_label_var.set(
+                _QUALITY_LABELS[_QUALITY_LEVEL_TO_INDEX.get(d.jpeg_quality_level, 1)])
+            self.reduction_strategy_label_var.set(
+                _REDUCTION_STRATEGY_LABELS.get(
+                    d.size_reduction_strategy, _REDUCTION_STRATEGY_LABELS["culprit_only"]))
+            self._update_mode_widgets()
+        finally:
+            self._applying_defaults = False
 
-        self.mode_var.set("grayscale" if d.compression_policy == "always_grayscale" else "binarize")
-        self.normalize_var.set(d.normalize_enabled)
-
-        self.dither_label_var.set(_DITHER_LABELS.get(d.dither_method, _DITHER_LABELS["auto"]))
-        self.quality_label_var.set(
-            _QUALITY_LABELS[_QUALITY_LEVEL_TO_INDEX.get(d.jpeg_quality_level, 1)])
-        self.capacity_method_var.set(d.capacity_exceeded_method)
-        self.reduction_strategy_label_var.set(
-            _REDUCTION_STRATEGY_LABELS.get(
-                d.size_reduction_strategy, _REDUCTION_STRATEGY_LABELS["culprit_only"]))
-        self.report_var.set(d.report_enabled)
-        self._update_mode_widgets()
-        self._update_strategy_combo_state()
-
-    def _format_diagnosis(self, d: diagnose_module.Diagnosis) -> str:
+    def _format_diagnosis(self, d: diagnose_module.Diagnosis, source_count: int = 1) -> str:
         lines = []
-        if self._diagnosed_input_count > 1:
-            lines.append(f"入力ファイル数：{self._diagnosed_input_count}件（上から順に結合して変換します）")
-        size_label = "結合後のファイルサイズ" if self._diagnosed_input_count > 1 else "入力ファイルサイズ"
+        if source_count > 1:
+            lines.append(f"材料のファイル数：{source_count}件")
         lines += [
             f"総ページ数：{d.page_count}ページ",
-            f"{size_label}：{_format_size(d.file_size_bytes)}",
-            f"テキストデータ：{'あり（画像化されます）' if d.has_text else 'なし'}",
+            f"文書の大きさ（変換する前の目安）：{_format_size(d.file_size_bytes)}",
+            "テキストデータ：" + ("なし" if not d.has_text else
+                              "あり（そのまま残ります）" if self.mode_var.get() == "none"
+                              else "あり（画像化されます）"),
         ]
 
         color_count = sum(1 for p in d.pages if p.content_type == "color")
@@ -1790,7 +1740,7 @@ class VaFaxApp(TkinterDnD.Tk):
                      f"白黒{mono_count}ページ")
 
         if self.profile.page_count_limit is not None:
-            status = "上限超過" if d.page_count_exceeds_limit else "上限内"
+            status = "上限超過（ページを削除してください）" if d.page_count_exceeds_limit else "上限内"
             lines.append(f"ページ数上限（{self.profile.page_count_limit}ページ）：{status}")
         if d.unsupported_pages:
             lines.append(self._format_unsupported_pages(d))
@@ -1827,25 +1777,69 @@ class VaFaxApp(TkinterDnD.Tk):
         self.diagnosis_text.insert("1.0", text)
         self.diagnosis_text.configure(state="disabled")
 
-    def _append_log(self, text: str) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", text + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def _set_status(self, text: str) -> None:
+        """いちばん新しい結果（開いた・追加した・保存した等）を、1行で示す。"""
+        self.status_var.set(text)
 
-    # ------------------------------------------------------------------ 変換実行
+    # ------------------------------------------------------------------ 保存（F-02・F-03・F-32）
 
-    def _on_convert(self) -> None:
-        if self._converting:
-            return
-        if not self.input_paths:
-            messagebox.showerror("VA FAX", "入力ファイルを選択してください。")
-            return
-        output_str = self.output_path_var.get().strip()
-        if not output_str:
-            messagebox.showerror("VA FAX", "出力ファイルを指定してください。")
-            return
+    def _can_save(self) -> bool:
+        return (self.document is not None and not self._saving
+                and self.diagnosis is not None and self._assembled is not None)
 
+    def _ask_overwrite(self, name: str) -> Optional[str]:
+        """上書き保存してよいかを尋ねる（［保存］のたびに出す。F-03）。"""
+        detail = ("いまの処理の内容（画像への変換など）で作ったものに置き換わり、元に戻せません。"
+                  if self.mode_var.get() in ("binarize", "grayscale")
+                  else "いまのページの並びで置き換わり、元に戻せません。")
+        return ask_choice(
+            self, "上書き保存の確認",
+            f"「{name}」に上書き保存します。よろしいですか？\n"
+            f"{detail}\n\n"
+            "元のファイルを残したいときは、［名前を付けて保存］を選んでください。",
+            [("上書き保存", "replace", True), ("名前を付けて保存", "save_as", False),
+             ("キャンセル", "cancel", False)],
+            cancel_value="cancel")
+
+    def _on_save(self, then: Optional[Callable[[], object]] = None) -> None:
+        if not self._can_save():
+            return
+        if self._save_path is None:
+            self._on_save_as(then)
+            return
+        # 上書き保存は、押すたびに確認を出す（F-03。2026-11-17 班長指示）
+        choice = self._ask_overwrite(self._save_path.name)
+        if choice == "save_as":
+            self._on_save_as(then)
+            return
+        if choice != "replace":
+            return
+        self._start_save(self._save_path, then)
+
+    def _on_save_as(self, then: Optional[Callable[[], object]] = None) -> None:
+        if not self._can_save():
+            return
+        # 名前の初めの値は、開いたファイル（保存した後は、保存したファイル）の名前に「_fax」を
+        # 付けたもの（［ファイル］→［オプション］で付けないこともできる。F-32・F-35）
+        base = self._save_path if self._save_path is not None else self._name_base
+        initial_dir = str(base.parent if base is not None else self._doc_dir or self._initial_open_dir())
+        initial_file = suggested_save_name(base, self._name_suffix()) if base else ""
+        path_str = filedialog.asksaveasfilename(
+            title="名前を付けて保存", initialdir=initial_dir, initialfile=initial_file,
+            defaultextension=".pdf", filetypes=_PDF_FILETYPES, parent=self)
+        if not path_str:
+            return
+        target = Path(path_str)
+        if any(saving_module.same_path(target, added) for added in self._added_paths):
+            messagebox.showerror(
+                APP_NAME,
+                "追加したファイルと同じ名前では保存できません"
+                "（ページの材料にしたファイルは書き換えません）。別の名前を指定してください。",
+                parent=self)
+            return
+        self._start_save(target, then)
+
+    def _start_save(self, target: Path, then: Optional[Callable[[], object]]) -> None:
         quality_index = _QUALITY_LABELS.index(self.quality_label_var.get())
         options = convert_module.ConvertOptions(
             mode=self.mode_var.get(),
@@ -1855,213 +1849,70 @@ class VaFaxApp(TkinterDnD.Tk):
         )
         capacity_method = self.capacity_method_var.get()
         reduction_strategy = _REDUCTION_STRATEGY_LABELS_REV[self.reduction_strategy_label_var.get()]
-        save_report_flag = self.report_var.get()
-        input_paths = list(self.input_paths)
-        output_path = Path(output_str)
 
-        try:
-            # 出力パスがいずれかの入力ファイルとも一致しないことを検証する（F-03の非破壊原則）。
-            for input_path in input_paths:
-                validate_output_path(input_path, output_path)
-        except OutputPathError as exc:
-            messagebox.showerror("VA FAX", str(exc))
-            return
-        if output_path.exists():
-            # 「分割して再実行」で実際に複数ファイルに分かれる場合、最終的なファイル名は
-            # ここでのoutput_pathとは異なる（_1of3等のサフィックスが付く）ため、この確認は
-            # 分割が発生しない場合（従来どおりの単一ファイル出力）にのみ意味を持つ。
-            # 分割後の各ファイルの重複は_do_convert側で別途検証する。
-            overwrite = messagebox.askyesno(
-                "VA FAX",
-                f"出力先に同名のファイルが既に存在します：\n{output_path.name}\n上書きしますか？")
-            if not overwrite:
-                return
-
-        self._converting = True
+        self._saving = True
         self.progress_var.set(0.0)
         self.progress_bar.grid()
-        self._set_diagnosis_text(self._format_diagnosis(self.diagnosis)) if self.diagnosis else None
-        self._append_log(f"変換を開始します（{options.mode}モード）")
-        self.convert_button.configure(state="disabled")
-        self.open_folder_button.configure(state="disabled")
+        self._set_status("保存しています...")
         self._set_settings_menu_enabled(False)
+        self._update_command_states()
 
-        # このワーカーはこの変換の間、常にこのプロファイルを使う（B-1）。
-        # 途中で self.profile が変更されても、進行中の変換・容量判定・レポートには影響しない。
-        profile = self.profile
-
+        # このワーカーはこの保存の間、常にこのプロファイルと、いまのページの表を組み立てた
+        # PDFを使う（途中で画面の状態が変わっても、進行中の保存には影響しない）。
         thread = threading.Thread(
-            target=self._do_convert,
-            args=(input_paths, output_path, profile, options, capacity_method,
-                  reduction_strategy, save_report_flag),
+            target=self._do_save,
+            args=(self._assembled, target, self.profile, options, capacity_method,
+                  reduction_strategy, list(self._material_paths), then),
             daemon=True,
         )
         thread.start()
 
-    def _do_convert(self, input_paths: list[Path], output_path: Path, profile: Profile,
-                     options: convert_module.ConvertOptions, capacity_method: str,
-                     reduction_strategy: str, save_report_flag: bool) -> None:
-        input_bytes, input_bytes_list, error_message = self._read_and_merge_inputs(input_paths)
-        if input_bytes is None:
-            self._message_queue.put({"type": "error", "message": error_message})
-            return
+    def _do_save(self, doc_bytes: bytes, target: Path, profile: Profile,
+                 options: convert_module.ConvertOptions, capacity_method: str,
+                 reduction_strategy: str, material_paths: list[Path],
+                 then: Optional[Callable[[], object]]) -> None:
+        def on_page_done(done: int, total: int, page_log: convert_module.PageConversionLog) -> None:
+            detail = f"{page_log.resolution_dpi}dpi"
+            if page_log.dither_method:
+                detail += f"・{_DITHER_LABELS.get(page_log.dither_method, page_log.dither_method)}"
+            if page_log.jpeg_quality is not None:
+                detail += f"・品質{page_log.jpeg_quality}"
+            self._message_queue.put({"type": "progress", "done": done, "total": total, "detail": detail})
+            self.logger.info("ページ %d/%d 処理完了（%s）", done, total, detail)
+
+        def on_retry(page_index: int, old_size: int, new_size: int,
+                     dpi: int, quality: Optional[int]) -> None:
+            quality_text = f"・品質{quality}" if quality is not None else ""
+            msg = (f"ページ{page_index + 1}：{old_size}バイトで容量超過→"
+                   f"{dpi}dpi{quality_text}で再生成→{new_size}バイト")
+            self._message_queue.put({"type": "retry", "message": msg})
+            self.logger.info(msg)
 
         try:
-            def on_page_done(done: int, total: int, page_log: convert_module.PageConversionLog) -> None:
-                detail = f"{page_log.resolution_dpi}dpi"
-                if page_log.dither_method:
-                    detail += f"・{_DITHER_LABELS.get(page_log.dither_method, page_log.dither_method)}"
-                if page_log.jpeg_quality is not None:
-                    detail += f"・品質{page_log.jpeg_quality}"
-                self._message_queue.put({"type": "progress", "done": done, "total": total, "detail": detail})
-                self.logger.info("ページ %d/%d 処理完了（%s）", done, total, detail)
-
-            result = convert_module.convert(input_bytes, profile, options, on_page_done=on_page_done)
-
-            def on_retry(page_index: int, old_size: int, new_size: int,
-                         dpi: int, quality: Optional[int]) -> None:
-                quality_text = f"・品質{quality}" if quality is not None else ""
-                msg = (f"ページ{page_index + 1}：{old_size}バイトで容量超過→"
-                       f"{dpi}dpi{quality_text}で再生成→{new_size}バイト")
-                self._message_queue.put({"type": "retry", "message": msg})
-                self.logger.info(msg)
-
-            # 容量超過時は常に自動で対処する（F-13）。既に容量上限以下の場合は
-            # enforce_size_limit／split_by_capacity自体が何もせずそのまま返す。
-            try:
-                if capacity_method == "split":
-                    results = size_control_module.split_by_capacity(
-                        input_bytes, profile, options, result, on_page_reduced=on_retry)
-                else:
-                    results = [size_control_module.enforce_size_limit(
-                        input_bytes, profile, options, result, on_retry=on_retry,
-                        strategy=reduction_strategy)]
-            except size_control_module.SizeLimitExceededError as exc:
-                self.logger.info("変換エラー（容量超過）：%s", exc)
-                self._message_queue.put({"type": "error", "message": str(exc)})
-                return
-
-            pdf_bytes_list = [r.build_pdf() for r in results]
-            part_paths = _split_output_paths(output_path, len(results))
-            if len(results) > 1:
-                # 入力ファイル名が偶然「_1of2」等のサフィックス形式で、分割後のパート名と
-                # 一致してしまう場合に備え、全入力パスとの一致を明示的に検証する（F-03の
-                # 非破壊原則。_on_convertのvalidate_output_pathはoutput_path単体しか
-                # 見ないため、サフィックス付与後のパスはここで検証する必要がある）。
-                input_norms = {os.path.normcase(os.path.abspath(str(p))) for p in input_paths}
-                for p in part_paths:
-                    if os.path.normcase(os.path.abspath(str(p))) in input_norms:
-                        self.logger.info("変換エラー（分割後のファイル名が入力ファイルと一致）")
-                        self._message_queue.put({
-                            "type": "error",
-                            "message": f"分割後の出力ファイル名（{p.name}）が入力ファイルと同じに"
-                                       "なってしまいます。入力ファイルは上書きできないため、"
-                                       "出力ファイル名を変更してください。",
-                        })
-                        return
-
-                # 分割によりファイル名が変わる（_1of3等のサフィックスが付く）ため、
-                # _on_convertでの事前確認（output_path単体）はここには及ばない。
-                # 実際に書き込む全パートの重複を改めて検証する（同一条件での再変換等）。
-                existing = [p.name for p in part_paths if p.exists()]
-                if existing:
-                    self.logger.info("変換エラー（分割後のファイルが既に存在）：%d件", len(existing))
-                    self._message_queue.put({
-                        "type": "error",
-                        "message": "分割後の出力ファイルが既に存在します：\n"
-                                   + "、".join(existing)
-                                   + "\n該当ファイルを移動・削除するか、出力ファイル名を変更してから、"
-                                     "もう一度変換してください。",
-                    })
-                    return
-
-            written_paths: list[Path] = []
-            try:
-                for path, pdf_bytes in zip(part_paths, pdf_bytes_list):
-                    path.write_bytes(pdf_bytes)
-                    written_paths.append(path)
-            except OSError as exc:
-                self.logger.info("変換エラー（出力書込失敗）：%s", type(exc).__name__)
-                # 分割の途中で失敗した場合、書き込み済みの一部のパートだけが残ると、
-                # 利用者が不完全なセットと気づかずに送信してしまう恐れがあるため、
-                # 今回書き込んだ分は削除する（今回の実行で作成したファイルのみが対象）。
-                undeleted: list[str] = []
-                for p in written_paths:
-                    try:
-                        p.unlink()
-                    except OSError:
-                        undeleted.append(p.name)
-                message = ("出力ファイルを書き込めませんでした。出力先フォルダの権限や"
-                           "空き容量、他のアプリで開かれていないかをご確認ください。")
-                if undeleted:
-                    message += ("\n書き込み途中のファイルが残っています。削除してください：\n"
-                                + "、".join(undeleted))
-                self._message_queue.put({"type": "error", "message": message})
-                return
-
-            # 分割が発生した場合、無サフィックスの元の出力ファイル名（例：foo_fax.pdf）には
-            # 書き込まれない。同名の古いファイルが残っていると分割後のファイルと取り違えて
-            # 誤送信する恐れがあるため、完了メッセージで注意を促す（削除はしない。
-            # そのファイルが本ツール以外で作られたものである可能性を排除できないため）。
-            stale_base_note = ""
-            if len(results) > 1 and output_path.exists():
-                stale_base_note = (
-                    f"\n※ 同名の既存ファイル（{output_path.name}）は今回の出力では更新されていません。"
-                    "分割後のファイルとの取り違えにご注意ください。"
-                )
-
-            report_saved = True
-            if save_report_flag:
-                for path, pdf_bytes, part_result in zip(part_paths, pdf_bytes_list, results):
-                    report_data = ReportData(
-                        input_filename="、".join(p.name for p in input_paths),
-                        input_size_bytes=sum(len(b) for b in input_bytes_list),
-                        output_filename=path.name,
-                        profile_display_name=profile.display_name,
-                        mode=options.mode,
-                        normalize_enabled=options.normalize_enabled,
-                        capacity_exceeded_method=capacity_method,
-                        page_logs=part_result.page_logs,
-                        final_output_size_bytes=len(pdf_bytes),
-                        jpeg_quality_requested=options.jpeg_quality,
-                    )
-                    try:
-                        save_report(path, report_data)
-                    except OSError as exc:
-                        # 変換自体（PDF出力）は既に成功しているため、エラー扱いにはせず
-                        # 完了メッセージに注記するに留める。
-                        report_saved = False
-                        self.logger.info("変換レポート保存エラー：%s", type(exc).__name__)
-
-            total_pages = sum(len(r.page_logs) for r in results)
-            total_size = sum(len(b) for b in pdf_bytes_list)
-            self.logger.info("変換完了：%d個のファイル、%dページ、出力サイズ合計 %d バイト",
-                              len(results), total_pages, total_size)
-            self._message_queue.put({
-                "type": "done",
-                "output_paths": [str(p) for p in part_paths],
-                "output_dir": str(part_paths[0].parent),
-                "page_counts": [len(r.page_logs) for r in results],
-                "output_sizes": [len(b) for b in pdf_bytes_list],
-                "report_saved": report_saved,
-                "stale_base_note": stale_base_note,
-                # プレビューに実際の出力（容量超過対処後の最終結果）を表示するため、
-                # 最初のパートのPDFバイト列をそのまま渡す（N-06：メモリ内でのみ受け渡す）。
-                "pdf_bytes": pdf_bytes_list[0],
-            })
-        except (convert_module.PageCountExceededError, convert_module.UnsupportedPageSizeError) as exc:
-            self.logger.info("変換エラー（検証エラー）：%s", exc)
-            self._message_queue.put({"type": "error", "message": str(exc)})
+            outcome = saving_module.save_document(
+                doc_bytes, target, profile, options, capacity_method, reduction_strategy,
+                material_paths, on_page_done=on_page_done, on_retry=on_retry)
+        except saving_module.SaveError as exc:
+            self.logger.info("保存エラー：%s", exc.kind)
+            self._message_queue.put({"type": "save_error", "message": str(exc)})
+        except size_control_module.SizeLimitExceededError as exc:
+            self.logger.info("保存エラー（容量超過）：%s", exc)
+            self._message_queue.put({"type": "save_error", "message": str(exc)})
         except convert_module.ConversionError as exc:
-            self.logger.info("変換エラー：%s", exc)
-            self._message_queue.put({"type": "error", "message": str(exc)})
+            self.logger.info("保存エラー（検証・変換）：%s", exc)
+            self._message_queue.put({"type": "save_error", "message": str(exc)})
         except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログと診断情報にのみ記録
-            self.logger.error("変換中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
-            self._errors.record(exc, "変換")
+            self.logger.error("保存中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
+            self._errors.record(exc, "保存")
             self._message_queue.put({
-                "type": "error",
-                "message": f"変換中に問題が発生しました。\n{CONTACT_NOTICE}",
+                "type": "save_error",
+                "message": f"保存中に問題が発生しました。\n{CONTACT_NOTICE}",
             })
+        else:
+            self.logger.info("保存完了：%d個のファイル、%dページ、合計 %d バイト",
+                             len(outcome.paths), sum(outcome.page_counts), sum(outcome.sizes))
+            self._message_queue.put({"type": "saved", "outcome": outcome, "target": target,
+                                     "then": then, "mode": options.mode})
 
     def _poll_queue(self) -> None:
         try:
@@ -2076,121 +1927,169 @@ class VaFaxApp(TkinterDnD.Tk):
         kind = message["type"]
         if kind == "diagnosis_error":
             if message["token"] != self._diagnosis_token:
-                return  # 別のファイルが選択済み・古い診断結果は無視する（B-5）
+                return  # 文書が変わっている・古い診断結果は無視する
             self.diagnosis = None
+            self._assembled = None
             self._set_diagnosis_text(message["message"])
-            self.convert_button.configure(state="disabled")
-            self.preview_pane.clear()
-            messagebox.showerror("VA FAX", message["message"])
+            self._update_command_states()
+            messagebox.showerror(APP_NAME, message["message"], parent=self)
         elif kind == "diagnosis_done":
             if message["token"] != self._diagnosis_token:
-                return  # 別のファイルが選択済み・古い診断結果は無視する（B-5）
-            diagnosis = message["diagnosis"]
-            self.diagnosis = diagnosis
-            self._diagnosed_input_count = message["input_count"]
-            self._apply_defaults_to_screen()
-            self._set_diagnosis_text(self._format_diagnosis(diagnosis))
-            self.convert_button.configure(state="normal")
+                return  # 文書が変わっている・古い診断結果は無視する
+            self.diagnosis = message["diagnosis"]
+            self._assembled = message["assembled"]
+            self._set_diagnosis_text(self._format_diagnosis(self.diagnosis, message["source_count"]))
+            selection, active = self._pending_selection
             self.preview_pane.set_document(
-                message["input_bytes"], message["profile"], self._current_preview_options())
+                message["assembled"], message["profile"], self._current_preview_options(),
+                selection=selection, active=active)
+            self._update_command_states()
         elif kind == "progress":
             done, total = message["done"], message["total"]
             self.progress_var.set(done / total * 100 if total else 0)
-            self._append_log(f"ページ {done}/{total} を処理しました（{message['detail']}）")
+            self._set_status(f"保存しています...（{done}／{total}ページ）")
         elif kind == "retry":
-            self._append_log(message["message"])
-        elif kind == "error":
-            self._converting = False
+            pass  # 容量超過での作り直しの経過は、ログファイルにだけ残す（F-17）
+        elif kind == "save_error":
+            self._saving = False
             self._set_settings_menu_enabled(True)
-            # 現在も有効な診断結果があるファイルに対してのみ、再実行を許可する（B-5）。
-            # 変換中に別ファイルの診断が失敗していた場合はdiagnosisがNoneのままになる。
-            if self.diagnosis is not None:
-                self.convert_button.configure(state="normal")
             self.progress_bar.grid_remove()
-            self._append_log(f"エラー：{message['message']}")
-            messagebox.showerror("VA FAX", message["message"])
-        elif kind == "done":
-            self._converting = False
-            self._set_settings_menu_enabled(True)
-            if self.diagnosis is not None:
-                self.convert_button.configure(state="normal")
-            self.progress_var.set(100.0)
-            self.progress_bar.grid_remove()
-            self._last_output_dir = Path(message["output_dir"])
-            self.open_folder_button.configure(state="normal")
-            # プレビューを実際の出力PDFの表示に切り替える（容量超過対処の結果も含めて
-            # 出力そのものが見える。処理内容の変更・別ファイル選択で元の表示に戻る）。
-            self.preview_pane.show_converted_result(message["pdf_bytes"])
+            self._update_command_states()
+            self._set_status("保存できませんでした。")
+            messagebox.showerror(APP_NAME, message["message"], parent=self)
+        elif kind == "saved":
+            self._on_saved(message["outcome"], message["target"], message["then"], message["mode"])
 
-            output_paths = message["output_paths"]
-            page_counts = message["page_counts"]
-            output_sizes = message["output_sizes"]
-            note = "（変換レポートの保存には失敗しました）" if not message["report_saved"] else ""
+    def _constraint_notes(self, outcome: saving_module.SaveOutcome, mode: str) -> list[str]:
+        """保存したファイルが、プロファイルの制約に合っていない点（F-13・F-14）。
 
-            if len(output_paths) == 1:
-                self._append_log(
-                    f"変換が完了しました：{output_paths[0]}"
-                    f"（{page_counts[0]}ページ、{_format_size(output_sizes[0])}）{note}"
-                )
-                popup_message = "変換が完了しました。"
-            else:
-                for path, pages, size in zip(output_paths, page_counts, output_sizes):
-                    self._append_log(f"　出力：{Path(path).name}（{pages}ページ、{_format_size(size)}）")
-                self._append_log(
-                    f"変換が完了しました：{len(output_paths)}個のファイルに分割して出力しました"
-                    f"（合計{sum(page_counts)}ページ）。{note}{message['stale_base_note']}"
-                )
-                popup_message = f"変換が完了しました（{len(output_paths)}個のファイルに分割）。"
-            if message["stale_base_note"]:
-                popup_message += message["stale_base_note"]
-            if not message["report_saved"]:
-                popup_message += "\n（変換レポートの保存には失敗しました）"
-            messagebox.showinfo("VA FAX", popup_message)
+        容量は、容量超過時の処理方式が「何もしない」のときに超えうる。ページ数・用紙サイズは、
+        圧縮方式が「何もしない」のとき（検証で止めず、保存の後に知らせる）に合わないことがある。
+        """
+        profile = self.profile
+        notes: list[str] = []
+        limit = profile.max_file_size_bytes
+        if max(outcome.sizes) > limit:
+            notes.append(
+                f"ファイルの大きさ（{_format_size(max(outcome.sizes))}）が、{profile.display_name}の"
+                f"容量上限（{_format_size(limit)}）を超えています。このままでは送信できない見込みです。")
+        diagnosis = self.diagnosis
+        if mode == "none" and diagnosis is not None:
+            if diagnosis.page_count_exceeds_limit:
+                notes.append(
+                    f"ページ数（{diagnosis.page_count}ページ）が、{profile.display_name}の上限"
+                    f"（{profile.page_count_limit}ページ）を超えています。")
+            if diagnosis.unsupported_pages:
+                pages_text = "、".join(str(n) for n in diagnosis.unsupported_pages)
+                notes.append(
+                    f"{profile.display_name}の対応外の用紙サイズのページがあります（{pages_text}ページ目）。")
+        return notes
 
-    def _open_output_folder(self) -> None:
-        if self._last_output_dir is None:
-            return
-        if sys.platform == "win32":
-            _open_folder(self._last_output_dir)
-            return
-        try:
-            _open_folder(self._last_output_dir)
-        except OSError:  # Mac等でopen／xdg-openを起動できない場合
-            messagebox.showerror(
-                "VA FAX", "出力フォルダを開けませんでした。出力先のフォルダを直接開いてください。")
+    def _on_saved(self, outcome: saving_module.SaveOutcome, target: Path,
+                  then: Optional[Callable[[], object]], mode: str = "binarize") -> None:
+        self._saving = False
+        self._set_settings_menu_enabled(True)
+        self.progress_var.set(100.0)
+        self.progress_bar.grid_remove()
+        limit_text = f"上限 {_format_size(self.profile.max_file_size_bytes)}"
 
-    # ------------------------------------------------------------------ 設定メニュー
-
-    def _on_change_profile(self) -> None:
-        dialog = ProfileChoiceDialog(self, current_profile_id=self.profile.id)
-        self.wait_window(dialog)
-        if not dialog.result_profile_id:
-            return
-        # カスタムは同じidのまま内容（容量上限等）だけが更新されうるため、
-        # idが変わっていなくてもcustomの場合は再読込する。
-        if dialog.result_profile_id == self.profile.id and dialog.result_profile_id != "custom":
-            return
-        try:
-            self.profile = load_all_profiles()[dialog.result_profile_id]
-        except (KeyError, ProfileError):
-            return
-        self.settings.profile_id = self.profile.id
-        save_settings(self.settings)
-        self.profile_label_var.set(_profile_summary(self.profile))
-        if self.input_paths:
-            self._run_diagnosis(list(self.input_paths))
-
-    def _on_open_defaults(self) -> None:
-        """変換の既定設定ダイアログを開き、保存されたら画面へ反映する（F-26）。"""
-        dialog = DefaultsDialog(self, self.settings.defaults)
-        self.wait_window(dialog)
-        if dialog.result is None:
-            return
-        self.settings.defaults = dialog.result
-        save_settings(self.settings)
-        self._apply_defaults_to_screen()
-        if self.input_paths:
-            self._set_output_path_text(
-                str(compute_default_output_path(self.input_paths[0], self.settings.defaults)))
+        if not outcome.split:
+            # 以後は、保存したファイルが、この文書の保存先になる。文書のページの表は、
+            # 材料のページを指したままにする（もう一度保存するときも、材料から作り直す。F-02）。
+            self._save_path = target
+            self._doc_dir = target.parent
+            self._dirty = False
+            self._set_status(
+                f"保存しました：{target.name}（{outcome.page_counts[0]}ページ、"
+                f"{_format_size(outcome.sizes[0])}。{limit_text}）")
         else:
-            self._show_output_placeholder()
+            # 分割が起きたときは、連番の付いたファイルだけを書いている。保存先のファイルは
+            # 変えていないので、文書は未保存のままとする（F-13）。
+            self._set_status(
+                f"{len(outcome.paths)}個のファイルに分けて保存しました"
+                f"（合計{sum(outcome.page_counts)}ページ。{limit_text}）。")
+
+        # プレビューを、実際に保存したPDFの表示に切り替える（処理内容の変更・ページの編集で、
+        # 変換イメージの表示に戻る。F-30）。分割のときは、最初のファイルを表示する。
+        self.preview_pane.show_converted_result(outcome.first_pdf)
+        self._update_title()
+        self._update_command_states()
+
+        notes = self._constraint_notes(outcome, mode)
+        if notes:
+            self.logger.info("保存したファイルが制約に合わない点：%d件", len(notes))
+            messagebox.showwarning(
+                APP_NAME, "保存しましたが、次の点が送信の制約に合っていません。\n\n"
+                + "\n".join(f"・{note}" for note in notes), parent=self)
+
+        # 保存の後に、保存したフォルダを開く（［ファイル］→［オプション］。F-35）
+        open_folder = self.settings.open_folder_after_save
+        if open_folder:
+            self._open_folder(outcome.paths[0].parent)
+
+        if outcome.split:
+            names = "\n".join(f"・{path.name}" for path in outcome.paths)
+            note = (f"\n\n「{target.name}」は変えていません。" if target.exists()
+                    else "")
+            choice = self._notify_split(
+                f"容量の上限（{_format_size(self.profile.max_file_size_bytes)}）を超えるため、"
+                f"{len(outcome.paths)}個のファイルに分けて保存しました。\n{names}{note}",
+                offer_folder=not open_folder)
+            if choice == "open":
+                self._open_folder(outcome.paths[0].parent)
+        elif then is not None:
+            then()
+
+    def _notify_split(self, text: str, offer_folder: bool = True) -> Optional[str]:
+        buttons = [("フォルダを開く", "open", False)] if offer_folder else []
+        return ask_choice(self, "保存の完了", text, buttons + [("閉じる", "close", True)],
+                          cancel_value="close")
+
+    def _open_folder(self, folder: Path) -> None:
+        try:
+            _open_folder(folder)
+        except OSError:
+            messagebox.showerror(
+                APP_NAME, "フォルダを開けませんでした。保存先のフォルダを直接開いてください。", parent=self)
+
+    # ------------------------------------------------------------------ オプション（F-35）
+
+    def _on_options(self) -> None:
+        """［ファイル］→［オプション］の画面を開き、保存されたら設定に書いて画面へ反映する（F-35）。"""
+        if self._saving:
+            return
+        dialog = OptionsDialog(self, self.settings, self.profile.id)
+        self.wait_window(dialog)
+        result = dialog.result
+        if result is None:
+            return
+        self._apply_options(result)
+
+    def _apply_options(self, result: dict) -> None:
+        # ---- FAXサービス（F-28）。カスタムは同じidのまま内容だけが変わりうるので、入力したら読み直す。
+        if result["custom_profile"] is not None:
+            save_custom_profile(result["custom_profile"])
+        profile_changed = result["profile_id"] != self.profile.id or result["custom_profile"] is not None
+        if profile_changed:
+            try:
+                self.profile = load_all_profiles()[result["profile_id"]]
+            except (KeyError, ProfileError):
+                profile_changed = False
+            else:
+                self.settings.profile_id = self.profile.id
+                self.profile_label_var.set(_profile_summary(self.profile))
+        # ---- 処理内容の既定値（F-26）。変えたときだけ、画面の処理内容を既定値に戻す。
+        defaults_changed = result["defaults"] != self.settings.defaults
+        self.settings.defaults = result["defaults"]
+        # ---- 保存（F-35）
+        self.settings.append_fax_to_save_name = result["append_suffix"]
+        self.settings.save_name_suffix = result["suffix"]
+        self.settings.open_folder_after_save = result["open_folder_after_save"]
+        save_settings(self.settings)
+
+        if defaults_changed:
+            made_by_va_fax = self.document is not None and self.document.all_made_by_va_fax()
+            self._apply_defaults_to_screen(made_by_va_fax=made_by_va_fax)
+        if profile_changed and self.document is not None:
+            self._document_changed()
+        self._update_title()   # 名前のない文書の題名（保存するときの名前）が変わりうる

@@ -10,9 +10,11 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional
 
-import img2pdf
+import pypdf
 import pypdfium2 as pdfium
 from PIL import Image
+from pypdf.generic import (BooleanObject, DecodedStreamObject, DictionaryObject, NameObject,
+                           NumberObject)
 
 from config.profiles import Profile
 
@@ -27,7 +29,9 @@ DEFAULT_TOLERANCE_MM = 2.0
 PDFIUM_LOCK = threading.RLock()
 
 BinarizeMethod = Literal["auto", "threshold", "diffusion"]
-CompressionMode = Literal["binarize", "grayscale"]
+# "none"は「何もしない」（F-11。ページを画像にしない。convert()は呼ばず、core.saving が
+# ページをそのまま書く。プレビューは、材料のページをそのまま表示する）。
+CompressionMode = Literal["binarize", "grayscale", "none"]
 
 
 class ConversionError(Exception):
@@ -57,7 +61,7 @@ class PageNormalization:
 
 @dataclass(frozen=True)
 class PageConversionLog:
-    """1ページの処理結果（F-17処理ログ・F-25変換レポート用の構造化データ）。"""
+    """1ページの処理結果（ログファイルへの記録〔F-17〕用の構造化データ）。"""
 
     page_index: int
     original_width_mm: float
@@ -102,7 +106,7 @@ def validate_before_convert(doc: pdfium.PdfDocument, profile: Profile, normalize
     if profile.page_count_limit is not None and page_count > profile.page_count_limit:
         raise PageCountExceededError(
             f"{profile.display_name}のページ数上限（{profile.page_count_limit}ページ）を"
-            f"超えています（{page_count}ページ）。ファイルを分割してください。"
+            f"超えています（{page_count}ページ）。要らないページを削除するか、文書を分けて保存してください。"
         )
 
     if not normalize_enabled:
@@ -273,7 +277,10 @@ def grayscale_page(image: Image.Image) -> Image.Image:
 def encode_binarized_page(image: Image.Image, dpi: int) -> bytes:
     """二値化画像をCCITT G4圧縮のTIFFとしてエンコードする（F-12）。"""
     buf = io.BytesIO()
-    image.save(buf, format="TIFF", compression="group4", dpi=(dpi, dpi))
+    # 帯（ストリップ）を1本にまとめる（RowsPerStrip＝画像の高さ）。build_pdfが、G4のデータを
+    # そのままPDFに載せるため（PDFのCCITTFaxDecodeは、1ページ分が1続きのデータであることを要する）。
+    image.save(buf, format="TIFF", compression="group4", dpi=(dpi, dpi),
+               tiffinfo={_TIFF_ROWS_PER_STRIP: image.height})
     return buf.getvalue()
 
 
@@ -284,15 +291,87 @@ def encode_grayscale_page(image: Image.Image, dpi: int, quality: int) -> bytes:
     return buf.getvalue()
 
 
+# TIFFのタグ番号（G4のデータを取り出すのに使う）
+_TIFF_COMPRESSION = 259
+_TIFF_PHOTOMETRIC = 262
+_TIFF_FILL_ORDER = 266
+_TIFF_STRIP_OFFSETS = 273
+_TIFF_ROWS_PER_STRIP = 278
+_TIFF_STRIP_BYTE_COUNTS = 279
+_TIFF_COMPRESSION_G4 = 4
+_TIFF_WHITE_IS_ZERO = 0
+
+# 出力PDFの文書情報に書く、本ツールで作ったことを示す印（F-02・F-07）。
+# この印のあるファイルを開いたときは、圧縮方式の初めの値を「何もしない」にする（F-06）。
+PRODUCER_MARK = "VA FAX"
+
+
+def _image_stream(data: bytes) -> tuple[DecodedStreamObject, float, float]:
+    """エンコード済みのページ画像（G4のTIFF・グレースケールのJPEG）を、PDFの画像オブジェクトにする。
+
+    画像のデータは再圧縮せず、そのまま載せる。戻り値は (画像オブジェクト, ページの幅pt, ページの高さpt)。
+    ページの大きさは、画像に付けたDPI情報から求める（解像度の混在時も正しい用紙サイズを保つ）。
+    """
+    with Image.open(io.BytesIO(data)) as image:
+        width, height = image.size
+        dpi_x, dpi_y = image.info.get("dpi", (72, 72))
+        stream = DecodedStreamObject()
+        if image.format == "TIFF":
+            tags = image.tag_v2
+            offsets = tags.get(_TIFF_STRIP_OFFSETS, ())
+            counts = tags.get(_TIFF_STRIP_BYTE_COUNTS, ())
+            if (tags.get(_TIFF_COMPRESSION) != _TIFF_COMPRESSION_G4 or len(offsets) != 1
+                    or len(counts) != 1 or tags.get(_TIFF_FILL_ORDER, 1) != 1):
+                raise ConversionError("二値化したページ画像の形式が想定と違います")
+            stream.set_data(data[offsets[0]:offsets[0] + counts[0]])
+            stream[NameObject("/Filter")] = NameObject("/CCITTFaxDecode")
+            stream[NameObject("/DecodeParms")] = DictionaryObject({
+                NameObject("/K"): NumberObject(-1),
+                NameObject("/Columns"): NumberObject(width),
+                NameObject("/Rows"): NumberObject(height),
+                # TIFFの「0が白」は、PDFのCCITTFaxDecodeの既定（BlackIs1=false）と同じ向き
+                NameObject("/BlackIs1"): BooleanObject(
+                    tags.get(_TIFF_PHOTOMETRIC, _TIFF_WHITE_IS_ZERO) != _TIFF_WHITE_IS_ZERO),
+            })
+            bits = 1
+        elif image.format == "JPEG" and image.mode == "L":
+            stream.set_data(data)
+            stream[NameObject("/Filter")] = NameObject("/DCTDecode")
+            bits = 8
+        else:
+            raise ConversionError("ページ画像の形式が想定と違います")
+    stream[NameObject("/Type")] = NameObject("/XObject")
+    stream[NameObject("/Subtype")] = NameObject("/Image")
+    stream[NameObject("/Width")] = NumberObject(width)
+    stream[NameObject("/Height")] = NumberObject(height)
+    stream[NameObject("/ColorSpace")] = NameObject("/DeviceGray")
+    stream[NameObject("/BitsPerComponent")] = NumberObject(bits)
+    return stream, width * 72.0 / float(dpi_x), height * 72.0 / float(dpi_y)
+
+
 def build_pdf(page_images: tuple[bytes, ...]) -> bytes:
     """エンコード済みページ画像群からPDFを再構成する（F-12）。
 
-    各画像にDPI情報を付与しているため、img2pdfはページごとのDPIから
-    物理サイズを算出する（解像度混在時も正しい用紙サイズを維持する）。
+    1ページに1つの画像を、ページいっぱいに置く。画像のデータ（G4・JPEG）は、そのまま載せる。
+    Ver130 までは img2pdf を使っていたが、ライセンス（LGPL-3.0）のため外し、pypdf で組み立てる
+    （N-08。出力の見た目が img2pdf と1画素も違わないことを、2026-11-17 に確かめた）。
     """
     if not page_images:
         raise ConversionError("出力対象のページがありません")
-    return img2pdf.convert(*page_images)
+    writer = pypdf.PdfWriter()
+    for data in page_images:
+        stream, page_width, page_height = _image_stream(data)
+        page = writer.add_blank_page(width=page_width, height=page_height)
+        content = DecodedStreamObject()
+        content.set_data(f"q {page_width:.4f} 0 0 {page_height:.4f} 0 0 cm /Im0 Do Q".encode("ascii"))
+        # ストリームは間接オブジェクトでなければならない（pypdfに、公開の登録の口はない）
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/XObject"): DictionaryObject({NameObject("/Im0"): writer._add_object(stream)})})
+        page[NameObject("/Contents")] = writer._add_object(content)
+    writer.add_metadata({"/Producer": PRODUCER_MARK})
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 @dataclass(frozen=True)

@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-"""config/settings.py のテスト（F-23・F-26・F-02の出力パス計算）。"""
+"""config/settings.py のテスト（F-23・F-26）。"""
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from config.settings import (
     ConversionDefaults,
-    OutputPathError,
     Settings,
-    compute_default_output_path,
     load_settings,
     save_settings,
     settings_path,
-    validate_output_path,
 )
 
 
@@ -33,22 +29,21 @@ def test_round_trip_with_defaults(appdata):
         profile_id="motfax",
         first_run_completed=True,
         defaults=ConversionDefaults(
-            output_folder_policy="fixed",
-            fixed_output_folder=r"C:\FAX送信箱",
-            output_name_policy="same_as_input",
-            compression_policy="always_binarize",
+            compression_policy="none",
             normalize_enabled=False,
             dither_method="diffusion",
             jpeg_quality_level="low",
-            capacity_exceeded_method="split",
+            capacity_exceeded_method="none",
             size_reduction_strategy="uniform",
-            report_enabled=False,
         ),
+        window_geometry="1200x800+40+30",
+        window_maximized=True,
     )
     save_settings(settings)
     loaded = load_settings()
     assert loaded.profile_id == "motfax"
     assert loaded.defaults == settings.defaults
+    assert loaded.window_geometry == "1200x800+40+30" and loaded.window_maximized is True
 
 
 def test_missing_file_falls_back(appdata):
@@ -83,10 +78,10 @@ def test_legacy_v1_settings_json_loads_without_error(appdata):
     assert not hasattr(loaded, "debug_mode")
     assert not hasattr(loaded, "last_output_dir")
     assert not hasattr(loaded, "presets")
-    # 保存し直すと新形式（version 2）で書き直され、旧キーは残らない
+    # 保存し直すと新形式で書き直され、旧キーは残らない
     save_settings(loaded)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["version"] == 2
+    assert raw["version"] == 3
     assert "debug_mode" not in raw
     assert "presets" not in raw
 
@@ -105,14 +100,14 @@ def test_invalid_default_values_fall_back_per_field(appdata):
     path.write_text(json.dumps({
         "profile_id": "motfax",
         "defaults": {
-            "output_folder_policy": "nonsense",
+            "capacity_exceeded_method": "nonsense",
             "compression_policy": "always_grayscale",
             "jpeg_quality_level": "ultra",
         },
     }), encoding="utf-8")
     loaded = load_settings()
     # 不正値は項目単位で既定値へ、正しい値は維持される
-    assert loaded.defaults.output_folder_policy == "same_as_input"
+    assert loaded.defaults.capacity_exceeded_method == "reduce_resolution"
     assert loaded.defaults.jpeg_quality_level == "medium"
     assert loaded.defaults.compression_policy == "always_grayscale"
 
@@ -199,74 +194,70 @@ def test_normalize_enabled_false_is_respected(appdata):
     loaded = load_settings()
     assert loaded.defaults.normalize_enabled is False
 
-
-def test_same_folder_same_name_combination_is_corrected_on_load(appdata):
-    """手動編集で禁止組合せが書かれていても、読込時に_fax付与へ矯正される（F-02・F-03）。"""
+def test_ver130_output_and_report_settings_are_ignored_and_dropped(appdata):
+    """Ver130 までの出力先・出力ファイル名の方針と、変換レポートの既定値が残っていても、
+    エラーにせず読み飛ばす。保存し直すと、古い項目は残らない（F-26）。"""
     path = settings_path()
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({
+        "version": 2,
+        "profile_id": "motfax",
         "defaults": {
-            "output_folder_policy": "same_as_input",
+            "output_folder_policy": "fixed",
+            "fixed_output_folder": r"C:\FAX送信箱",
             "output_name_policy": "same_as_input",
+            "compression_policy": "always_grayscale",
+            "report_enabled": True,
         },
     }), encoding="utf-8")
     loaded = load_settings()
-    assert loaded.defaults.output_name_policy == "append_fax"
+    assert loaded.defaults.compression_policy == "always_grayscale"
+    assert not hasattr(loaded.defaults, "fixed_output_folder")
+    save_settings(loaded)
+    text = path.read_text(encoding="utf-8")
+    assert "FAX送信箱" not in text and "report_enabled" not in text and "output_" not in text
 
 
-# ---------------------------------------------------- 出力パスの初期値計算（F-02）
-
-def test_output_path_same_folder_append_fax():
-    input_path = Path(r"C:\案件\書面.pdf")
-    result = compute_default_output_path(input_path, ConversionDefaults())
-    assert result == Path(r"C:\案件\書面_fax.pdf")
+@pytest.mark.parametrize("value", ["none", "always_binarize", "always_grayscale"])
+def test_compression_policy_round_trips_including_nothing(appdata, value):
+    save_settings(Settings(defaults=ConversionDefaults(compression_policy=value)))
+    assert load_settings().defaults.compression_policy == value
 
 
-def test_output_path_fixed_folder():
-    defaults = ConversionDefaults(output_folder_policy="fixed",
-                                   fixed_output_folder=r"C:\FAX送信箱")
-    result = compute_default_output_path(Path(r"C:\案件\書面.pdf"), defaults)
-    assert result == Path(r"C:\FAX送信箱\書面_fax.pdf")
+@pytest.mark.parametrize("value", ["abc", "1200x800", "1200x800+10", 123, None, "99999999x1+0+0"])
+def test_invalid_window_geometry_is_dropped(appdata, value):
+    """手で書き換えられた・壊れた大きさの指定は、使わない。"""
+    path = settings_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"window_geometry": value}), encoding="utf-8")
+    assert load_settings().window_geometry is None
 
 
-def test_output_path_fixed_folder_same_name():
-    defaults = ConversionDefaults(output_folder_policy="fixed",
-                                   fixed_output_folder=r"C:\FAX送信箱",
-                                   output_name_policy="same_as_input")
-    result = compute_default_output_path(Path(r"C:\案件\書面.pdf"), defaults)
-    assert result == Path(r"C:\FAX送信箱\書面.pdf")
+def test_settings_file_holds_no_file_names(appdata):
+    """設定ファイルに書くのは、フォルダの場所・プロファイル・既定設定・ウィンドウの大きさだけ（N-06）。"""
+    save_settings(Settings(last_input_dir=r"C:\案件", profile_id="motfax"))
+    raw = json.loads(settings_path().read_text(encoding="utf-8"))
+    assert set(raw) == {"version", "last_input_dir", "profile_id", "first_run_completed",
+                        "window_geometry", "window_maximized", "append_fax_to_save_name",
+                        "save_name_suffix", "open_folder_after_save", "defaults"}
 
 
-def test_output_path_fixed_policy_without_folder_falls_back_to_input_folder():
-    defaults = ConversionDefaults(output_folder_policy="fixed", fixed_output_folder=None)
-    result = compute_default_output_path(Path(r"C:\案件\書面.pdf"), defaults)
-    assert result == Path(r"C:\案件\書面_fax.pdf")
+def test_append_fax_option_defaults_to_on_and_round_trips(appdata):
+    assert load_settings().append_fax_to_save_name is True
+    save_settings(Settings(append_fax_to_save_name=False))
+    assert load_settings().append_fax_to_save_name is False
 
 
-# ------------------------------------------------------ 出力パスの検証（F-02・F-03）
-
-def test_validate_rejects_output_equal_to_input(tmp_path):
-    input_path = tmp_path / "書面.pdf"
-    input_path.write_bytes(b"dummy")
-    with pytest.raises(OutputPathError):
-        validate_output_path(input_path, input_path)
+def test_suffix_and_open_folder_round_trip(appdata):
+    save_settings(Settings(save_name_suffix="-送信用", open_folder_after_save=True))
+    loaded = load_settings()
+    assert loaded.save_name_suffix == "-送信用" and loaded.open_folder_after_save is True
 
 
-def test_validate_rejects_case_insensitive_same_path(tmp_path):
-    input_path = tmp_path / "Shomen.PDF"
-    input_path.write_bytes(b"dummy")
-    with pytest.raises(OutputPathError):
-        validate_output_path(input_path, tmp_path / "shomen.pdf")
-
-
-def test_validate_rejects_missing_output_folder(tmp_path):
-    input_path = tmp_path / "書面.pdf"
-    input_path.write_bytes(b"dummy")
-    with pytest.raises(OutputPathError):
-        validate_output_path(input_path, tmp_path / "存在しないフォルダ" / "書面_fax.pdf")
-
-
-def test_validate_accepts_normal_output(tmp_path):
-    input_path = tmp_path / "書面.pdf"
-    input_path.write_bytes(b"dummy")
-    validate_output_path(input_path, tmp_path / "書面_fax.pdf")  # 例外が出ないこと
+@pytest.mark.parametrize("value", ["", "  ", "a/b", 'x"y', "a\\b", "長" * 21, 5, None])
+def test_invalid_suffix_falls_back_to_fax(appdata, value):
+    """手で書き換えられた・使えない文字は、初期値の「_fax」にする。"""
+    path = settings_path()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"save_name_suffix": value}), encoding="utf-8")
+    assert load_settings().save_name_suffix == "_fax"
