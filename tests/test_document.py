@@ -324,3 +324,22 @@ def test_image_source_joins_document_and_converts(sample_bytes, paper, motfax):
     assert len(result.page_images) == 4
     target = motfax.normalize_target
     assert _page_sizes(result.build_pdf()) == [(round(target.width_mm), round(target.height_mm))] * 4
+
+
+# ---------------------------------------------------------------- 送付書の差し替え（F-36。Ver210）
+
+def test_put_front_inserts_and_replaces_in_one_step(load):
+    doc = Document()
+    doc.add_source(load("sample01_a4_text.pdf"))          # 3ページ
+    doc.clear_history()
+    first = doc.put_front(load("sample02_b4_text.pdf"))
+    assert first == range(0, doc.sources[1].page_count)
+    cover_pages = doc.sources[1].page_count
+    assert [ref.source for ref in doc.pages] == [1] * cover_pages + [0, 0, 0]
+    # 前の送付書（材料1）を取り除いて、新しいものを先頭に入れる
+    doc.move([cover_pages], 0)                              # 並べ替えても、取り除くのは送付書のページ
+    replaced = doc.put_front(load("sample01_a4_text.pdf"), {(1, i) for i in range(cover_pages)})
+    assert replaced == range(0, 3)
+    assert [ref.source for ref in doc.pages] == [2, 2, 2, 0, 0, 0]
+    assert doc.undo() and [ref.source for ref in doc.pages][:1] == [0]
+    assert doc.undo() and [ref.source for ref in doc.pages] == [1] * cover_pages + [0, 0, 0]

@@ -188,6 +188,17 @@ class Document:
         self._commit(self._pages[:at] + tuple(refs) + self._pages[at:])
         return range(at, at + len(refs))
 
+    def put_front(self, source: Source, replacing: Iterable[tuple[int, int]] = ()) -> range:
+        """材料sourceの全ページを先頭に入れ、replacing（（材料の番号, ページ）の組）に当たるページを
+        取り除く（送付書の作成・差し替え。F-36）。元に戻すときは、まとめて1回で戻る。
+        入れた位置の範囲を返す。"""
+        remove = set(replacing)
+        self._sources.append(source)
+        index = len(self._sources) - 1
+        rest = tuple(ref for ref in self._pages if (ref.source, ref.page) not in remove)
+        self._commit(tuple(PageRef(index, i) for i in range(source.page_count)) + rest)
+        return range(0, source.page_count)
+
     def delete(self, indices: Iterable[int]) -> bool:
         """選んだ位置のページを取り除く。すべてのページを取り除くことはできない（F-33）。"""
         chosen = {i for i in indices if 0 <= i < len(self._pages)}

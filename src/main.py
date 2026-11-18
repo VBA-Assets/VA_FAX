@@ -49,12 +49,31 @@ def _run_smoke_test(spec: str) -> int:
     Image.new("RGB", (600, 400), "white").save(image, format="PNG")
     document.add_source(document_module.load_source(image.getvalue(), paper), at=0)
     document.rotate([0], 90)
+    # 送付書（F-36。Ver210）：reportlab と、明朝体の埋め込みが exe で動くことを確かめる
+    from core import cover_sheet as cover_module
+
+    cover = cover_module.CoverInput(court="架空地方裁判所", other="架空", sender_title="原告訴訟代理人弁護士",
+                                    documents=[cover_module.DocItem("甲第1号証", "1")])
+    data, _pages, _total = cover_module.build_cover(
+        cover, cover_module.Sender(office="架空法律事務所", lawyer="架空"), document.page_count, paper)
+    if os.name == "nt" and cover_module._registered_font != cover_module._FONT_NAME:
+        raise SystemExit("送付書の明朝体を埋め込めません")
+    document.put_front(document_module.load_source(data, paper))
     from core import diagnose as diagnose_module
 
     diagnose_module.diagnose(document.assemble(), profile)
     saving_module.save_document(
         document.assemble(), Path(output_str), profile,
-        convert_module.ConvertOptions(mode="binarize"), "reduce_resolution", "culprit_only", [])
+        convert_module.ConvertOptions(mode="binarize", page_numbers=True), "reduce_resolution",
+        "culprit_only", [])
+    # ページ番号（F-37。Ver210）：「何もしない」のときに PDF のまま重ねる番号（reportlab・Arial の埋め込み）
+    from core import as_is
+
+    numbered = as_is.stamp_numbers(document.assemble())
+    if os.name == "nt" and as_is._font() != as_is._FONT_NAME:
+        raise SystemExit("ページ番号の字を埋め込めません")
+    if b"/FontFile2" not in numbered and os.name == "nt":
+        raise SystemExit("ページ番号の字が埋め込まれていません")
 
     from tkinterdnd2 import TkinterDnD
 

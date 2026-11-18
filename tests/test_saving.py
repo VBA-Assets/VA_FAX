@@ -174,3 +174,24 @@ def test_compression_none_with_split_writes_numbered_files(tmp_path, sample_byte
                     mode="none")
     assert outcome.split and sum(outcome.page_counts) == 4
     assert not target.exists() and all(p.exists() for p in outcome.paths)
+
+
+# ---------------------------------------------------------------- 「何もしない」のページ番号（F-37。Ver210）
+
+def test_none_mode_stamps_numbers_without_rasterizing(tmp_path, motfax, sample_bytes):
+    """「何もしない」でも番号を入れる。ページは画像にせず（文字データが残る）、番号だけを重ねる。"""
+    import io as _io
+    import pypdf as _pypdf
+    from core.convert import ConvertOptions
+    from core.saving import save_document
+    data = sample_bytes("sample01_a4_text.pdf")
+    target = tmp_path / "out.pdf"
+    save_document(data, target, motfax, ConvertOptions(mode="none", page_numbers=True), "none",
+                  "culprit_only", [])
+    reader = _pypdf.PdfReader(_io.BytesIO(target.read_bytes()))
+    texts = [page.extract_text() or "" for page in reader.pages]
+    assert all("本書は" in text for text in texts)                       # 元の文字データが残る
+    assert [f"{i + 1}/3" in text for i, text in enumerate(texts)] == [True, True, True]
+    # 番号を入れないときは、そのまま（バイト単位で同じ）
+    save_document(data, target, motfax, ConvertOptions(mode="none"), "none", "culprit_only", [])
+    assert target.read_bytes() == data

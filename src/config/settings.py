@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """アプリケーション設定の永続化と変換の既定設定（F-23・F-26）。
 
-保存内容はフォルダパス・選択中プロファイル・変換の既定設定・ウィンドウの大きさ等のUI状態のみとし、
-文書に関する情報は一切含めない（N-06）。外部への送信は行わない（N-01）。
+保存内容はフォルダパス・選択中プロファイル・変換の既定設定・ウィンドウの大きさ等のUI状態と、
+送付書の送信者（事務所自身の情報。F-36。Ver210）のみとし、文書に関する情報は一切含めない（N-06）。外部への送信は行わない（N-01）。
 settings.json は手動編集にも耐える平易な構造とし、事務所内の複数PCへ
 コピーすることでプロファイルと既定設定を一括配布できる（F-23・F-28）。
 """
@@ -16,9 +16,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from core.cover_sheet import Sender
+
 # 3：Ver200。出力先・出力ファイル名の方針と、変換レポートの既定値をなくし（F-02・旧F-25）、
 #    ウィンドウの大きさ・位置を足した（F-23）。古い項目が残っていても、読み飛ばす。
-SETTINGS_VERSION = 3
+# 4：Ver210。送付書の送信者（cover_sender）を足した（F-36）。
+SETTINGS_VERSION = 4
 
 # "none"は「何もしない」（F-11・F-13。Ver200）
 COMPRESSION_POLICIES = ("always_binarize", "always_grayscale", "none")
@@ -27,7 +30,7 @@ JPEG_QUALITY_LEVELS = ("high", "medium", "low")
 SIZE_REDUCTION_STRATEGIES = ("culprit_only", "uniform")
 CAPACITY_EXCEEDED_METHODS = ("reduce_resolution", "split", "none")
 
-# ［名前を付けて保存］・［コピーして開く］のファイル名に付ける文字の初期値と、使えない文字（F-35）
+# ［保存］の画面に初めに入るファイル名に付ける文字の初期値と、使えない文字（F-35）
 DEFAULT_NAME_SUFFIX = "_fax"
 NAME_SUFFIX_MAX_LENGTH = 20
 _NAME_SUFFIX_FORBIDDEN = set('\\/:*?"<>|')
@@ -46,6 +49,7 @@ class ConversionDefaults:
     jpeg_quality_level: str = "medium"
     capacity_exceeded_method: str = "reduce_resolution"
     size_reduction_strategy: str = "culprit_only"
+    page_numbers: bool = True    # ページ番号を入れる（F-37。Ver210。初期値はオン）
 
 
 @dataclass
@@ -58,13 +62,15 @@ class Settings:
     # ウィンドウの大きさ・位置（最大化していないときのもの）と、最大化していたか（F-23。Ver200）
     window_geometry: Optional[str] = None
     window_maximized: bool = False
-    # ［名前を付けて保存］・［コピーして開く］のファイル名の初めの値に、文字を付けるか・付ける文字
+    # ［保存］の画面に初めに入るファイル名に、文字を付けるか・付ける文字
     # （［ファイル］→［オプション］。F-35）
     append_fax_to_save_name: bool = True
     save_name_suffix: str = DEFAULT_NAME_SUFFIX
     # 保存の後に、保存したフォルダを開くか（［ファイル］→［オプション］。F-35）
     open_folder_after_save: bool = False
     defaults: ConversionDefaults = field(default_factory=ConversionDefaults)
+    # 送付書の送信者（事務所名・住所・電話・FAX・弁護士名。［ファイル］→［オプション］の「送付書」。F-36）
+    cover_sender: Sender = field(default_factory=Sender)
 
 
 def app_data_dir() -> Path:
@@ -113,6 +119,7 @@ def _defaults_from_dict(raw: Any) -> ConversionDefaults:
                                           base.capacity_exceeded_method),
         size_reduction_strategy=_choice(raw, "size_reduction_strategy", SIZE_REDUCTION_STRATEGIES,
                                          base.size_reduction_strategy),
+        page_numbers=bool(raw.get("page_numbers", base.page_numbers)),
     )
 
 
@@ -162,11 +169,12 @@ def load_settings() -> Settings:
         save_name_suffix=valid_name_suffix(raw.get("save_name_suffix")) or DEFAULT_NAME_SUFFIX,
         open_folder_after_save=bool(raw.get("open_folder_after_save", False)),
         defaults=_defaults_from_dict(raw.get("defaults")),
+        cover_sender=Sender.from_dict(raw.get("cover_sender")),
     )
 
 
 def save_settings(settings: Settings) -> None:
-    """settings.jsonへ保存する（UI状態のみ。文書情報は含めない）。"""
+    """settings.jsonへ保存する（UI状態と送付書の送信者のみ。文書情報は含めない）。"""
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": SETTINGS_VERSION, **asdict(settings)}

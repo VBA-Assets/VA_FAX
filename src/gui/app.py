@@ -4,14 +4,15 @@
 本モジュールはエンジン（core.document / core.diagnose / core.saving 等）を呼び出すのみで、
 変換・保存のロジック自体は持たない（GUIとエンジンの分離）。
 
-Ver200 で、通常のPDF編集アプリと同じ形にした：ファイルを開く・コピーして開く・保存・
-名前を付けて保存（F-32）と、サムネイルでのページの編集（追加・削除・並べ替え・回転、
+Ver200 で、通常のPDF編集アプリと同じ形にした：ファイルを開く・保存
+（F-32。Ver210 で、保存は場所と名前を指定する［保存］の1つにし、［コピーして開く］はなくした）と、サムネイルでのページの編集（追加・削除・並べ替え・回転、
 元に戻す・やり直す。F-33）。文書の中身は core.document.Document（ページの表）が持つ。
 開いた・追加した・保存したファイルの名前と場所は、この画面がメモリ内にだけ持ち、
 設定ファイル・ログ・診断情報には書かない（N-06・F-24・F-31）。
 """
 from __future__ import annotations
 
+import gc
 import os
 import queue
 import re
@@ -20,8 +21,8 @@ import sys
 import threading
 import tkinter as tk
 import traceback
-from dataclasses import replace
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Iterable, Optional
@@ -32,6 +33,7 @@ from config.profiles import PageSize, Profile, ProfileError, load_all_profiles, 
 from config.settings import (NAME_SUFFIX_MAX_LENGTH, ConversionDefaults, Settings, save_settings,
                              valid_name_suffix)
 from core import convert as convert_module
+from core import cover_sheet as cover_module
 from core import diagnose as diagnose_module
 from core import document as document_module
 from core import saving as saving_module
@@ -40,6 +42,7 @@ from core.document import Document, Source, SourceError
 from core.size_control import format_bytes_as_size as _format_size
 import diagnostics
 from gui import theme
+from gui.cover_dialog import CoverSheetDialog, SenderFrame
 from gui.icons import IconSet
 from gui.preview import PreviewPane
 from gui.ribbon import Ribbon
@@ -47,6 +50,12 @@ from logging_setup import setup_logger
 from version import __version__
 
 APP_NAME = "VA FAX"
+# 新規作成した文書の、保存するまでの名前（題名。VA Document と同じ）
+NEW_DOCUMENT_NAME = "新しい文書"
+# 新規作成した文書に、ファイルのページがなく送付書だけがあるときの、保存の名前の元
+COVER_ONLY_NAME = "送付書.pdf"
+EMPTY_DOCUMENT_TEXT = ("ページがありません。［追加］か、ファイルのドラッグ＆ドロップでページを入れてください。"
+                       "送付書は、「送付書」の組の［作成］で作れます。")
 CONTACT_NOTICE = "問題が解決しない場合は、VBAアセット（vba-assets.net）のお問い合わせ窓口までご連絡ください。"
 
 # 一度の操作（ドロップ・ダイアログ選択）でこの件数を超えて追加する場合は確認を挟む
@@ -69,7 +78,9 @@ _NOTHING_TEXT = "何もしない"
 _CAPACITY_REDUCE_TEXT = "解像度・品質を下げて再実行"
 _CAPACITY_SPLIT_TEXT = "分割して再実行"
 _NORMALIZE_TEXT = "用紙正規化（用紙サイズ・方向が対応外のページを自動で修正します）"
-_NONE_MODE_NOTE = "※ 圧縮方式が「何もしない」のときは、「解像度・品質を下げて再実行」と用紙正規化は効きません。"
+_PAGE_NUMBERS_TEXT = "ページ番号を入れる（各ページの上端の中央に「1/12」の形で入れます）"
+_NONE_MODE_NOTE = ("※ 圧縮方式が「何もしない」のときは、「解像度・品質を下げて再実行」と用紙正規化は効きません"
+                   "（ページ番号は入れられます）。")
 
 # 既定設定の圧縮方式（settings.json）→ 画面の圧縮方式
 _POLICY_TO_MODE = {"always_binarize": "binarize", "always_grayscale": "grayscale", "none": "none"}
@@ -95,6 +106,18 @@ _CUSTOM_PAGE_SIZE_CHOICES = (
 )
 
 _DND_PATH_PATTERN = re.compile(r"\{([^}]*)\}|(\S+)")
+
+
+@dataclass(frozen=True)
+class CoverRecord:
+    """文書に入れた送付書（F-36）。refsは、送付書のページ（（材料の番号, ページ）の組）。
+
+    totalは、送付書に書いた送信枚数（分からないときはNone。保存の前に、文書のページ数と比べる）。
+    """
+
+    refs: frozenset
+    input: cover_module.CoverInput
+    total: Optional[int]
 
 
 def _parse_dropped_paths(data: str) -> list[str]:
@@ -138,7 +161,7 @@ def fit_geometry_to_screen(geometry: Optional[str], screen_width: int, screen_he
 
 
 def suggested_save_name(base: Path, suffix: Optional[str]) -> str:
-    """［名前を付けて保存］・［コピーして開く］の名前の初めの値（F-32）。base は、開いたファイル
+    """［保存］の画面の名前の初めの値と、画像を開いた文書の名前（F-32）。base は、開いたファイル
     （保存した後は、保存したファイル）。suffix（初期値は「_fax」。［ファイル］→［オプション］で変える・
     付けないにできる。F-35）を付ける。既に suffix で終わる名前（VA FAX で保存したファイルを開き直した
     とき等）には、重ねて付けない。拡張子は .pdf にする（画像を開いたとき等）。
@@ -186,6 +209,18 @@ def _open_folder(folder: Path) -> None:
         return
     opener = "open" if sys.platform == "darwin" else "xdg-open"
     subprocess.Popen([opener, str(folder)])  # noqa: S603
+
+
+def _collect_closed_window() -> None:
+    """閉じた画面の部品（Tkの変数等）を、ここ（画面のスレッド）で片づける。
+
+    部品を属性に持つ画面は、閉じた後も循環参照のごみとして残る（部品の master をたどると画面に
+    戻るため）。残したままにすると、裏のスレッド（事前診断・保存・プレビューの描画）でガベージ
+    コレクションにかかり、Tclが「別のスレッドからの解放」として異常終了することがある
+    （Windows fatal exception: code 0x80000003。main.py の初回の選択画面と同じ対策。2026-11-18 に
+    送付書の入力の画面で見つけ、同じ形の［オプション］の画面にも入れた）。
+    """
+    gc.collect()
 
 
 def _bring_to_front(window: tk.Misc) -> None:
@@ -256,6 +291,7 @@ class ProfileChoiceDialog(tk.Toplevel):
         ok_button.pack(side="right")
 
         self.transient(master)
+        theme.place_over(self, master)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self._on_cancel)
         _bring_to_front(self)
@@ -348,6 +384,7 @@ class CustomProfileDialog(tk.Toplevel):
             side="right", padx=(0, 6))
 
         self.transient(master)
+        theme.place_over(self, master)
         self.grab_set()
         _bring_to_front(self)
 
@@ -404,6 +441,7 @@ class DefaultsFrame(ttk.Frame):
         super().__init__(master)
         self._compression_var = tk.StringVar(value=current.compression_policy)
         self._normalize_var = tk.BooleanVar(value=current.normalize_enabled)
+        self._page_numbers_var = tk.BooleanVar(value=current.page_numbers)
         self._dither_label_var = tk.StringVar(
             value=_DITHER_LABELS.get(current.dither_method, _DITHER_LABELS["auto"]))
         self._quality_label_var = tk.StringVar(
@@ -476,10 +514,12 @@ class DefaultsFrame(ttk.Frame):
 
         self._normalize_check = tk.Checkbutton(opt, text=_NORMALIZE_TEXT, variable=self._normalize_var)
         self._normalize_check.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+        self._page_numbers_check = tk.Checkbutton(opt, text=_PAGE_NUMBERS_TEXT, variable=self._page_numbers_var)
+        self._page_numbers_check.grid(row=12, column=0, columnspan=3, sticky="w", padx=8)
 
         self._none_note_var = tk.StringVar()
         ttk.Label(opt, textvariable=self._none_note_var, foreground=theme.COLOR_MUTED,
-                  justify="left").grid(row=12, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+                  justify="left").grid(row=13, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
         self._update_compression_states()
 
@@ -513,13 +553,14 @@ class DefaultsFrame(ttk.Frame):
                 _QUALITY_LABELS.index(self._quality_label_var.get())],
             capacity_exceeded_method=self._capacity_method_var.get(),
             size_reduction_strategy=_REDUCTION_STRATEGY_LABELS_REV[self._reduction_strategy_var.get()],
+            page_numbers=bool(self._page_numbers_var.get()),
         )
 
 
 class OptionsDialog(tk.Toplevel):
     """［ファイル］→［オプション］の画面（F-35）。
 
-    タブは「保存」「処理内容の既定値」（F-26）「FAXサービス」（F-28）。Ver200 で、［設定］メニューの
+    タブは「保存」「処理内容の既定値」（F-26）「FAXサービス」（F-28）「送付書」（F-36。Ver210）。Ver200 で、［設定］メニューの
     「FAXサービスを変更」「変換の既定設定」をここにまとめた（2026-11-17 班長指示）。保存時は result に
     選んだ値の辞書を設定する（設定ファイルへの書き込みは、画面の側が行う）。
     """
@@ -545,7 +586,7 @@ class OptionsDialog(tk.Toplevel):
         self._open_folder_var = tk.BooleanVar(value=settings.open_folder_after_save)
 
         tk.Checkbutton(
-            save_tab, text="［名前を付けて保存］・［コピーして開く］のファイル名に、次の文字を付ける",
+            save_tab, text="［保存］の画面に初めに入るファイル名に、次の文字を付ける",
             variable=self._append_suffix_var, command=self._update_suffix_state,
         ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(save_tab, text="付ける文字：").grid(row=1, column=0, sticky="w", padx=(24, 4), pady=(2, 0))
@@ -577,6 +618,11 @@ class OptionsDialog(tk.Toplevel):
         self._custom_button.pack(anchor="w", pady=(8, 0))
         self.profile_frame.var.trace_add("write", lambda *_a: self._update_custom_button())
 
+        # ---- 送付書（送信者。F-36。Ver210）
+        self.sender_frame = SenderFrame(self.notebook, settings.cover_sender)
+        self.sender_frame.configure(padding=10)
+        self.notebook.add(self.sender_frame, text="送付書")
+
         button_row = ttk.Frame(self)
         button_row.pack(fill="x", padx=12, pady=12)
         theme.create_button(
@@ -587,6 +633,7 @@ class OptionsDialog(tk.Toplevel):
         self._update_suffix_state()
         self._update_custom_button()
         self.transient(master)
+        theme.place_over(self, master)
         self.grab_set()
         self.bind("<Escape>", lambda _e: self.destroy())
         _bring_to_front(self)
@@ -641,6 +688,7 @@ class OptionsDialog(tk.Toplevel):
             "append_suffix": append,
             "suffix": suffix or self._settings.save_name_suffix,
             "open_folder_after_save": bool(self._open_folder_var.get()),
+            "cover_sender": self.sender_frame.result(),
         }
         self.destroy()
 
@@ -666,6 +714,7 @@ class ChoiceDialog(tk.Toplevel):
             theme.create_button(row, accent=accent, text=label,
                                 command=lambda v=value: self._choose(v)).pack(side="right", padx=(8, 0))
         self.transient(master)
+        theme.place_over(self, master)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self.bind("<Escape>", lambda _e: self.destroy())
@@ -698,10 +747,17 @@ class VaFaxApp(TkinterDnD.Tk):
         self.document: Optional[Document] = None
         self._save_path: Optional[Path] = None      # 保存先（Noneは、名前のない文書）
         self._name_base: Optional[Path] = None      # 名前のない文書の、名前の元にするファイル（F-32）
-        self._doc_dir: Optional[Path] = None        # 名前を付けて保存の、初めの場所
+        self._doc_dir: Optional[Path] = None        # 保存の画面の、初めの場所
         self._material_paths: list[Path] = []       # 材料にしたファイル（開いた・追加した）
         self._added_paths: list[Path] = []          # そのうち、追加したファイル（保存先にできない）
-        self._dirty = False                         # 未保存か（題名の「＊」）
+        # 文書の材料ごとのファイル（材料の番号の順。送付書の材料はNone。F-36の書類の一覧に使う）
+        self._source_paths: list[Optional[Path]] = []
+        self._covers: list[CoverRecord] = []        # 文書に入れた送付書（F-36）
+        # 保存している文書の送付書（入力, 送付書のページ数, 総ページ数）。保存の後に入力を書く（F-36）
+        self._saving_cover: Optional[tuple[cover_module.CoverInput, int, int]] = None
+        # 開いてから（又は最後に保存してから）、まだ保存していないか。題名の「＊」・［保存］の青枠・
+        # 閉じるときの確認は、これと「保存すると違うものができるか」の両方で決める（_has_unsaved_work）
+        self._dirty = False
         self._assembled: Optional[bytes] = None     # いまのページの表を組み立てたPDF（診断済みのもの）
         self._pending_selection: tuple[list[int], Optional[int]] = ([], None)
         # 圧縮方式を「何もしない」にしたとき、容量超過時の「解像度・品質を下げて再実行」から
@@ -748,6 +804,7 @@ class VaFaxApp(TkinterDnD.Tk):
         d = self.settings.defaults
         self.profile_label_var = tk.StringVar(value=_profile_summary(self.profile))
         self.normalize_var = tk.BooleanVar(value=d.normalize_enabled)
+        self.page_numbers_var = tk.BooleanVar(value=d.page_numbers)
         self.mode_var = tk.StringVar(value=_POLICY_TO_MODE.get(d.compression_policy, "binarize"))
         self.dither_label_var = tk.StringVar(
             value=_DITHER_LABELS.get(d.dither_method, _DITHER_LABELS["auto"]))
@@ -765,12 +822,12 @@ class VaFaxApp(TkinterDnD.Tk):
 
         # ［ファイル］（F-32。リボンの「ファイル」の組と同じ操作）
         file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="新規作成", accelerator="Ctrl+N", command=self._on_new)
         file_menu.add_command(label="開く...", accelerator="Ctrl+O", command=self._on_open)
-        file_menu.add_command(label="コピーして開く...", command=self._on_open_copy)
         file_menu.add_separator()
-        file_menu.add_command(label="保存", accelerator="Ctrl+S", command=self._on_save)
-        file_menu.add_command(label="名前を付けて保存...", accelerator="Ctrl+Shift+S",
-                              command=self._on_save_as)
+        # 保存は［保存...］の1つ（保存の画面で場所と名前を指定する。上書きは、同じ名前を選ぶと
+        # Windows が確かめる。2026-11-18 班長指示）
+        file_menu.add_command(label="保存...", accelerator="Ctrl+S", command=self._on_save)
         file_menu.add_separator()
         file_menu.add_command(label="閉じる", command=self._on_close_document)
         file_menu.add_separator()
@@ -850,7 +907,8 @@ class VaFaxApp(TkinterDnD.Tk):
             f"圧縮方式：{defaults.compression_policy}・ディザ：{defaults.dither_method}・"
             f"JPEG品質：{defaults.jpeg_quality_level}",
             f"容量超過：{defaults.capacity_exceeded_method}・削減方式：{defaults.size_reduction_strategy}・"
-            f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}",
+            f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}・"
+            f"ページ番号：{'入れる' if defaults.page_numbers else '入れない'}",
             "",
         ]
 
@@ -861,7 +919,7 @@ class VaFaxApp(TkinterDnD.Tk):
         else:
             doc_text = (f"{document.page_count}ページ・材料のファイル {document.used_source_count()}件・"
                         f"保存先 {'あり' if self._save_path is not None else 'なし（名前のない文書）'}・"
-                        f"未保存の変更 {'あり' if self._dirty else 'なし'}・"
+                        f"未保存の作業 {'あり' if self._has_unsaved_work() else 'なし'}・"
                         f"元に戻せる {'はい' if document.can_undo else 'いいえ'}")
         lines += [
             "■ いまの画面の状態",
@@ -874,7 +932,8 @@ class VaFaxApp(TkinterDnD.Tk):
             f"処理内容：圧縮方式 {self.mode_var.get()}・ディザ {self.dither_label_var.get()}・"
             f"JPEG品質 {self.quality_label_var.get()}・容量超過 {self.capacity_method_var.get()}・"
             f"削減方式 {self.reduction_strategy_label_var.get()}・"
-            f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}",
+            f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}・"
+            f"ページ番号 {'入れる' if self.page_numbers_var.get() else '入れない'}",
             f"保存：{'実行中' if self._saving else 'していない'}",
             "",
         ]
@@ -917,6 +976,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.preview_pane.on_move = self._move_pages
         self.preview_pane.on_selection_changed = self._update_command_states
         self.preview_pane.on_context_menu = self._show_page_menu
+        self.preview_pane.on_page_double_click = self._on_page_double_click
         # 欄の外へ持ち出している間に表示するカーソル（ゴミ箱。同梱の.curを使う）
         self.preview_pane.remove_cursor = theme.resolve_remove_cursor(self.preview_pane)
 
@@ -971,11 +1031,12 @@ class VaFaxApp(TkinterDnD.Tk):
     def _build_ribbon(self) -> None:
         """画面最上段のリボン（Wordのリボンと同じ形。VA mintsと同じribbon.pyを用いる）。
 
-        画面の操作ボタンはすべてここに集約する。組は「ファイル」（開く・コピーして開く・保存・
-        名前を付けて保存）と「ページ」（追加・削除・回転〔角度はメニューで選ぶ〕・元に戻す・
-        やり直す）の2つ。
-        主要な操作（開く・名前を付けて保存・追加）は大きいボタンとし、開く・名前を付けて保存は
-        常時アクセント色の枠線で強調する。
+        画面の操作ボタンはすべてここに集約する。組は「ファイル」（開く・保存）と
+        「ページ」（追加・削除・回転〔角度はメニューで選ぶ〕・元に戻す・やり直す）と「送付書」
+        （作成〔作成済みは編集〕。F-36）の3つ。
+        主要な操作（新規作成・開く・保存・追加・作成）は大きいボタンとし、保存だけをアクセント色の
+        枠線で強調する（決定の操作。開くは、新規作成と同じ「始める」操作なので強調しない。保存の強調は、
+        保存すると開いたファイルと違うものができるときだけとする。2026-11-18 班長指示）。
         各ボタンはマウスを重ねると説明書きを出す（tooltip.py）。
         FAXサービスの変更・処理内容の既定値は、［ファイル］→［オプション］に置く（F-35）。
         """
@@ -984,23 +1045,21 @@ class VaFaxApp(TkinterDnD.Tk):
         ribbon.grid(row=0, column=0, sticky="we", padx=8, pady=(6, 2))
 
         group = ribbon.group("ファイル")
-        # このツールでは、送信用のファイルを別に作る［名前を付けて保存］を標準の保存とし、大きい
-        # ボタンにする。開いたファイルを書き換える［保存］（上書き保存）は小さいボタンとし、押すたびに
-        # 確認を出す（2026-11-17 班長指示）。
+        # 保存は［保存］の1つとし、保存の画面で場所と名前を指定する（Ver200 の［名前を付けて保存］と
+        # 小さい［保存］〔上書き保存〕を、2026-11-18 班長指示で1つにした）。
+        # 新規作成（2026-11-18 班長指示）：白紙の文書から、［追加］でページを入れ、送付書を作って保存する
+        self.new_button = group.large(
+            "新規作成", self._on_new, icon="document_text",
+            tip="ページのない新しい文書を作ります（Ctrl+N）。"
+                "［追加］か、ファイルのドラッグ＆ドロップでページを入れ、必要なら送付書を［作成］して、"
+                "［保存］します。")
         self.open_button = group.large(
-            "開く", self._on_open, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            "開く", self._on_open,
             tip="PDFファイルを開きます（Ctrl+O）。"
                 "ウィンドウへのドラッグ＆ドロップでも開けます。")
-        self.save_as_button = group.large(
-            "名前を付けて保存", self._on_save_as, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
-            state="disabled", tip=self._save_as_button_tip)
-        self.open_copy_button = group.small(
-            "コピーして開く", self._on_open_copy,
-            tip="PDFファイルの中身を、名前のない新しい文書として開きます。"
-                "元のファイルは変わりません。"
-                "保存するときに、名前を指定します（初めの値は「元の名前_fax.pdf」）。")
-        self.save_button = group.small(
-            "保存", self._on_save, state="disabled", tip=self._save_button_tip)
+        self.save_button = group.large(
+            "保存", self._on_save, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
+            state="disabled", tip=self._save_button_tip)
 
         group = ribbon.group("ページ")
         self.add_button = group.large(
@@ -1025,6 +1084,56 @@ class VaFaxApp(TkinterDnD.Tk):
             "やり直す", self._on_redo, state="disabled",
             tip="元に戻したページの編集を、やり直します（Ctrl+Y）。")
 
+        group = ribbon.group("送付書")
+        # 文書に送付書があるときは、ボタンの文字を「編集」にする（2026-11-18 班長指示）
+        self.cover_button = group.large(
+            "作成", self._on_cover, icon="document_header", state="disabled", tip=self._cover_button_tip)
+
+    def _cover_button_tip(self) -> str:
+        """「送付書」の組のボタンの説明書き（作成済みかで変える）。"""
+        if self._current_cover() is not None:
+            return ("文書の送付書（兼受領書）の入力の画面を開きます。［OK］で、直した送付書に差し替えます。"
+                    "送付書のページのダブルクリックでも開けます。")
+        return ("送付書（兼受領書）を作って、文書の先頭に入れます。"
+                "書類の一覧は、追加したファイルの名前から作ります（VA mints の「甲001 売買契約書」の"
+                "形の名前は、「甲第1号証」と書きます）。"
+                "事務所名などは、［ファイル］→［オプション］の「送付書」で入力します。")
+
+    def _save_makes_change(self) -> bool:
+        """保存すると、開いたファイルと違うものができるか（［保存］の青枠。2026-11-18 班長指示）。
+
+        違うものができるのは、圧縮方式が二値化・グレースケールのとき、ページ番号を入れるとき、
+        送付書があるとき、ページを編集したとき（開いたファイルの全ページを元の順・向きのまま並べた
+        だけではないとき。新規作成した文書・画像を開いた文書を含む）。
+        """
+        document = self.document
+        if document is None or document.page_count == 0:
+            return False
+        if self.mode_var.get() != "none" or self.page_numbers_var.get():
+            return True
+        if self._current_cover() is not None:
+            return True
+        if self._name_base is None or not document.is_untouched_single_source():
+            return True
+        return document.sources[document.pages[0].source].kind != "pdf"
+
+    def _has_unsaved_work(self) -> bool:
+        """まだ保存していない作業があるか（2026-11-18 班長指示で、題名の「＊」・［保存］の青枠・
+        閉じるときの確認を、この1つの基準にそろえた）。開いてから（又は最後に保存してから）まだ
+        保存しておらず、かつ、保存すると開いたファイルと違うものができるとき。"""
+        return self.document is not None and self._dirty and self._save_makes_change()
+
+    def _update_save_emphasis(self) -> None:
+        """［保存］の青枠（アクセント色の枠線）は、まだ保存していない作業があるときだけ出す
+        （_has_unsaved_work。保存した直後や、保存しても同じものしかできないときは、普通の大きい
+        ボタンの見た目にする）。"""
+        if not hasattr(self, "save_button"):
+            return
+        style = (theme.RIBBON_ACCENT_BUTTON_STYLE if self._has_unsaved_work()
+                 else theme.RIBBON_LARGE_BUTTON_STYLE)
+        if str(self.save_button.cget("style")) != style:
+            self.save_button.configure(style=style)
+
     def _save_unavailable_reason(self) -> str:
         """保存のボタンが押せない理由（押せるときは空）。"""
         if self.document is None:
@@ -1035,19 +1144,13 @@ class VaFaxApp(TkinterDnD.Tk):
             return "診断が終わると押せるようになります。"
         return ""
 
-    def _save_as_button_tip(self) -> str:
-        """［名前を付けて保存］ボタンの説明書き（押せないときは、その理由を示す）。"""
-        return self._save_unavailable_reason() + (
-            "選択中の処理内容（画像への変換など）を行って、場所と名前を指定して保存します"
-            "（Ctrl+Shift+S）。開いたファイルは変わりません。"
-            "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
-
     def _save_button_tip(self) -> str:
         """［保存］ボタンの説明書き（押せないときは、その理由を示す）。"""
         return self._save_unavailable_reason() + (
-            "選択中の処理内容（画像への変換など）を行って、開いたファイルに上書き保存します（Ctrl+S）。"
-            "押すたびに、上書きしてよいかを確かめます。"
-            "元のファイルを残したいときは、［名前を付けて保存］を使ってください。")
+            "選択中の処理内容（画像への変換など）を行って、場所と名前を指定して保存します（Ctrl+S）。"
+            "名前の初めの値は「元の名前_fax.pdf」で、元のファイルは残ります。"
+            "同じ名前を選ぶと、置き換えてよいかを確かめてから上書きします。"
+            "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
 
     def _delete_button_tip(self) -> str:
         """［削除］ボタンの説明書き（押せないときは、その理由を示す）。"""
@@ -1124,13 +1227,30 @@ class VaFaxApp(TkinterDnD.Tk):
 
         self.normalize_check = tk.Checkbutton(parent, text=_NORMALIZE_TEXT, variable=self.normalize_var)
         self.normalize_check.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
+        # ページ番号（F-37。Ver210。2026-11-18 班長決定）
+        self.page_numbers_check = tk.Checkbutton(parent, text=_PAGE_NUMBERS_TEXT, variable=self.page_numbers_var)
+        self.page_numbers_check.grid(row=12, column=0, columnspan=3, sticky="w", padx=8)
 
         # 圧縮方式が「何もしない」のときに、効かない項目を選べなくしている理由（F-11）
         self.none_note_var = tk.StringVar()
         ttk.Label(parent, textvariable=self.none_note_var, foreground=theme.COLOR_MUTED,
-                  justify="left").grid(row=12, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
+                  justify="left").grid(row=13, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
+        self._update_option_visibility()
         self._update_mode_widgets()
+
+    def _update_option_visibility(self) -> None:
+        """用紙正規化・「ページ番号を入れる」は、［オプション］の既定値でオンのときだけ、処理内容の
+        選択に出す。オフのときは出さず、その処理を行わない（2026-11-18 班長指示）。"""
+        for enabled, check, var in ((self.settings.defaults.normalize_enabled, self.normalize_check,
+                                     self.normalize_var),
+                                    (self.settings.defaults.page_numbers, self.page_numbers_check,
+                                     self.page_numbers_var)):
+            if enabled:
+                check.grid()
+            else:
+                check.grid_remove()
+                var.set(False)
 
     def _update_strategy_combo_state(self) -> None:
         """削減方式は、「解像度を下げて再実行」を選択している場合のみ選択可能とする。"""
@@ -1174,6 +1294,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.mode_var.trace_add("write", self._on_preview_options_changed)
         self.dither_label_var.trace_add("write", self._on_preview_options_changed)
         self.normalize_var.trace_add("write", self._on_preview_options_changed)
+        self.page_numbers_var.trace_add("write", self._on_preview_options_changed)
         self.quality_label_var.trace_add("write", self._on_preview_options_changed)
         self.capacity_method_var.trace_add("write", self._on_preview_options_changed)
         self.reduction_strategy_label_var.trace_add("write", self._on_preview_options_changed)
@@ -1183,15 +1304,18 @@ class VaFaxApp(TkinterDnD.Tk):
             mode=self.mode_var.get(),
             normalize_enabled=self.normalize_var.get(),
             dither_method=_DITHER_LABELS_REV[self.dither_label_var.get()],
+            page_numbers=bool(self.page_numbers_var.get()),
         )
 
     def _on_preview_options_changed(self, *_args) -> None:
-        if self.document is None:
-            return
-        if not self._applying_defaults:
+        if self.document is not None and not self._applying_defaults:
             # 処理の選択を変えたら、未保存とする（F-15）
             self._dirty = True
-            self._update_title()
+        # 題名の「＊」・［保存］の青枠は、処理の選択によって変わる（_has_unsaved_work）
+        self._update_save_emphasis()
+        if self.document is None:
+            return
+        self._update_title()
         self.preview_pane.update_options(self._current_preview_options())
 
     # ------------------------------------------------------------------ キー操作
@@ -1203,8 +1327,9 @@ class VaFaxApp(TkinterDnD.Tk):
             ("<Control-z>", self._on_undo), ("<Control-Z>", self._on_undo),
             ("<Control-y>", self._on_redo), ("<Control-Y>", self._on_redo),
             ("<Control-o>", self._on_open), ("<Control-O>", self._on_open),
+            ("<Control-n>", self._on_new), ("<Control-N>", self._on_new),
             ("<Control-s>", self._on_save),
-            ("<Control-Shift-S>", self._on_save_as), ("<Control-Shift-s>", self._on_save_as),
+            ("<Control-Shift-S>", self._on_save), ("<Control-Shift-s>", self._on_save),
         ):
             self.bind_all(sequence, lambda event, h=handler: self._on_global_key(event, h), add="+")
 
@@ -1218,8 +1343,8 @@ class VaFaxApp(TkinterDnD.Tk):
         for sequence, handler in (
             ("<Command-z>", self._on_undo), ("<Command-Z>", self._on_undo),
             ("<Command-y>", self._on_redo), ("<Command-Y>", self._on_redo),
-            ("<Command-o>", self._on_open), ("<Command-s>", self._on_save),
-            ("<Command-Shift-S>", self._on_save_as), ("<Command-Shift-s>", self._on_save_as),
+            ("<Command-o>", self._on_open), ("<Command-n>", self._on_new), ("<Command-s>", self._on_save),
+            ("<Command-Shift-S>", self._on_save), ("<Command-Shift-s>", self._on_save),
         ):
             self.bind_all(sequence, lambda event, h=handler: self._on_global_key(event, h), add="+")
         self.createcommand("::tk::mac::Quit", self._on_quit)
@@ -1242,14 +1367,32 @@ class VaFaxApp(TkinterDnD.Tk):
             return None
         if self._save_path is not None:
             return self._save_path.name
+        if self._name_base is None:
+            return NEW_DOCUMENT_NAME          # 新規作成した文書（保存するまで）
         return suggested_save_name(self._name_base, self._name_suffix())
+
+    def _save_base(self) -> Optional[Path]:
+        """保存の画面の名前・場所の初めの値の元にするファイル（F-32）。保存した後は保存したファイル、
+        開いた文書は開いたファイル。新規作成した文書は、初めに入れたファイル（ファイルのページがなく、
+        送付書だけのときは「送付書.pdf」。ページがなければNone）。"""
+        if self._save_path is not None:
+            return self._save_path
+        if self._name_base is not None:
+            return self._name_base
+        first = next((path for path in self._source_paths if path is not None), None)
+        if first is not None:
+            return first
+        if self.document is not None and self.document.page_count:
+            folder = self._doc_dir or Path(self._initial_open_dir())
+            return folder / COVER_ONLY_NAME
+        return None
 
     def _name_suffix(self) -> Optional[str]:
         """名前の初めの値に付ける文字（付けないならNone。［ファイル］→［オプション］。F-35）。"""
         return self.settings.save_name_suffix if self.settings.append_fax_to_save_name else None
 
     def _update_title(self) -> None:
-        self.title(window_title(self._document_name(), self._dirty))
+        self.title(window_title(self._document_name(), self._has_unsaved_work()))
 
     def _update_command_states(self) -> None:
         """リボンとメニューのボタンの、押せる・押せないを、いまの状態に合わせる。"""
@@ -1262,22 +1405,23 @@ class VaFaxApp(TkinterDnD.Tk):
         def state(enabled: bool) -> str:
             return "normal" if enabled else "disabled"
 
+        self.new_button.configure(state=state(idle))
         self.open_button.configure(state=state(idle))
-        self.open_copy_button.configure(state=state(idle))
         self.save_button.configure(state=state(can_save))
-        self.save_as_button.configure(state=state(can_save))
+        self._update_save_emphasis()
         self.add_button.configure(state=state(has_doc))
         self.delete_button.configure(
             state=state(has_doc and bool(selected) and len(selected) < document.page_count))
         self.rotate_button.configure(state=state(has_doc and bool(selected)))
         self.undo_button.configure(state=state(has_doc and document.can_undo))
         self.redo_button.configure(state=state(has_doc and document.can_redo))
+        self.cover_button.configure(state=state(has_doc),
+                                    text="編集" if self._current_cover() is not None else "作成")
 
         menu = self._file_menu
+        menu.entryconfig("新規作成", state=state(idle))
         menu.entryconfig("開く...", state=state(idle))
-        menu.entryconfig("コピーして開く...", state=state(idle))
-        menu.entryconfig("保存", state=state(can_save))
-        menu.entryconfig("名前を付けて保存...", state=state(can_save))
+        menu.entryconfig("保存...", state=state(can_save))
         menu.entryconfig("閉じる", state=state(has_doc))
         menu.entryconfig("オプション...", state=state(idle))
 
@@ -1316,24 +1460,31 @@ class VaFaxApp(TkinterDnD.Tk):
     def _initial_open_dir(self) -> str:
         return self.settings.last_input_dir or str(Path.home())
 
+    def _on_new(self) -> None:
+        """［新規作成］：ページのない新しい文書を作る（2026-11-18 班長指示）。"""
+        if self._saving:
+            return
+        self._guard_unsaved(self._new_document)
+
+    def _new_document(self) -> None:
+        self._close_document()
+        self.document = Document()
+        self._doc_dir = Path(self._initial_open_dir())
+        self._dirty = False                          # 何も入れていない間は、閉じるときに尋ねない
+        self._apply_defaults_to_screen()
+        self.logger.info("新しい文書を作った")
+        self._set_status("新しい文書を作りました。")
+        self._document_changed([], None)
+
     def _on_open(self) -> None:
         if self._saving:
             return
         path_str = filedialog.askopenfilename(
             title="開く", initialdir=self._initial_open_dir(), filetypes=_OPEN_FILETYPES, parent=self)
         if path_str:
-            self._guard_unsaved(lambda: self._open_path(Path(path_str), as_copy=False))
+            self._guard_unsaved(lambda: self._open_path(Path(path_str)))
 
-    def _on_open_copy(self) -> None:
-        if self._saving:
-            return
-        path_str = filedialog.askopenfilename(
-            title="コピーして開く", initialdir=self._initial_open_dir(), filetypes=_OPEN_FILETYPES,
-            parent=self)
-        if path_str:
-            self._guard_unsaved(lambda: self._open_path(Path(path_str), as_copy=True))
-
-    def _open_path(self, path: Path, as_copy: bool, more_paths: Iterable[Path] = ()) -> bool:
+    def _open_path(self, path: Path, more_paths: Iterable[Path] = ()) -> bool:
         """ファイルを開いて、新しい文書にする。more_pathsは、続けて後ろに追加するファイル。"""
         source = self._read_source(path)
         if source is None:
@@ -1342,16 +1493,28 @@ class VaFaxApp(TkinterDnD.Tk):
         document.add_source(source)
         document.clear_history()   # 開く前には戻さない
 
-        # 画像を開いたときは、［コピーして開く］と同じ扱いにする（画像のファイルをPDFで
-        # 書き換えないため。F-32）。
-        untitled = as_copy or source.kind == "image"
+        # 画像を開いたときは、名前のない文書にする（画像のファイルをPDFで書き換えないため。F-32）。
+        # Ver200 の［コピーして開く］は、［保存］を1つにまとめて働きに差がなくなったため、Ver210 で
+        # なくした（2026-11-18 班長指示）。
+        untitled = source.kind == "image"
         self.document = document
         self._save_path = None if untitled else path
         self._name_base = path
         self._doc_dir = path.parent
         self._material_paths = [path]
         self._added_paths = []
-        self._dirty = untitled     # 名前のない文書は、保存するまで未保存
+        self._source_paths = [path]
+        self._covers = []
+        # このツールで送付書を入れて保存したファイルなら、その入力を読み、1ページ目からを送付書とみなす（F-36）
+        saved_cover = cover_module.load_input(path) if source.kind == "pdf" else None
+        if saved_cover is not None and saved_cover.cover_pages < source.page_count:
+            total = saved_cover.total_pages if saved_cover.total_pages == source.page_count else None
+            self._covers.append(CoverRecord(
+                frozenset((0, i) for i in range(saved_cover.cover_pages)), saved_cover.input, total))
+            self.logger.info("送付書の入力を読んだ：送付書%dページ", saved_cover.cover_pages)
+        # 開いた直後は、まだ保存していない（保存すると違うものができるなら、題名の「＊」・青枠・
+        # 閉じるときの確認を出す。2026-11-18 班長指示）
+        self._dirty = True
         self.diagnosis = None
         self._assembled = None
 
@@ -1385,6 +1548,8 @@ class VaFaxApp(TkinterDnD.Tk):
         self._name_base = None
         self._material_paths = []
         self._added_paths = []
+        self._source_paths = []
+        self._covers = []
         self._dirty = False
         self.diagnosis = None
         self._assembled = None
@@ -1441,7 +1606,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def _guard_unsaved(self, action: Callable[[], object]) -> None:
         """未保存の文書があれば、保存するかを尋ねてから、actionを行う（F-32の5）。"""
-        if self.document is None or not self._dirty:
+        if not self._has_unsaved_work():
             action()
             return
         choice = self._ask_save_changes(self._document_name() or "")
@@ -1452,7 +1617,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def _ask_save_changes(self, name: str) -> Optional[str]:
         return ask_choice(
-            self, "保存の確認", f"「{name}」への変更を保存しますか？",
+            self, "保存の確認", f"「{name}」を保存していません。保存しますか？",
             [("保存する", "save", True), ("保存しない", "discard", False), ("キャンセル", "cancel", False)],
             cancel_value="cancel")
 
@@ -1471,7 +1636,7 @@ class VaFaxApp(TkinterDnD.Tk):
         if self.document is None:
             self.preview_pane.hide_drop_indicator()
             if paths and not self._saving:
-                self._open_path(paths[0], as_copy=False, more_paths=paths[1:])
+                self._open_path(paths[0], more_paths=paths[1:])
             return event.action
         at = self.preview_pane.external_drop_index(event.x_root, event.y_root)
         self.preview_pane.hide_drop_indicator()
@@ -1558,6 +1723,7 @@ class VaFaxApp(TkinterDnD.Tk):
         added = self.document.add_sources(sources, at)
         self._material_paths += loaded
         self._added_paths += loaded
+        self._source_paths += loaded
         self.settings.last_input_dir = str(loaded[-1].parent)
         save_settings(self.settings)
         self.logger.info("ファイルを追加：%d件・%dページ", len(sources), len(added))
@@ -1633,7 +1799,15 @@ class VaFaxApp(TkinterDnD.Tk):
         self.progress_var.set(0.0)
         self.progress_bar.grid_remove()
         self._update_title()
-        self._run_diagnosis()
+        if self.document is not None and self.document.page_count == 0:
+            # ページのない文書（新規作成の直後や、元に戻して空になったとき）：診断・保存はしない
+            self._diagnosis_token += 1
+            self.diagnosis = None
+            self._assembled = None
+            self.preview_pane.clear()
+            self._set_diagnosis_text(EMPTY_DOCUMENT_TEXT)
+        else:
+            self._run_diagnosis()
         self._update_command_states()
 
     # ------------------------------------------------------------------ 事前診断（F-04）
@@ -1711,6 +1885,7 @@ class VaFaxApp(TkinterDnD.Tk):
             self.capacity_method_var.set(d.capacity_exceeded_method)
             self.mode_var.set("none" if made_by_va_fax else _POLICY_TO_MODE.get(d.compression_policy, "binarize"))
             self.normalize_var.set(d.normalize_enabled)
+            self.page_numbers_var.set(d.page_numbers)
             self.dither_label_var.set(_DITHER_LABELS.get(d.dither_method, _DITHER_LABELS["auto"]))
             self.quality_label_var.set(
                 _QUALITY_LABELS[_QUALITY_LEVEL_TO_INDEX.get(d.jpeg_quality_level, 1)])
@@ -1787,45 +1962,22 @@ class VaFaxApp(TkinterDnD.Tk):
         return (self.document is not None and not self._saving
                 and self.diagnosis is not None and self._assembled is not None)
 
-    def _ask_overwrite(self, name: str) -> Optional[str]:
-        """上書き保存してよいかを尋ねる（［保存］のたびに出す。F-03）。"""
-        detail = ("いまの処理の内容（画像への変換など）で作ったものに置き換わり、元に戻せません。"
-                  if self.mode_var.get() in ("binarize", "grayscale")
-                  else "いまのページの並びで置き換わり、元に戻せません。")
-        return ask_choice(
-            self, "上書き保存の確認",
-            f"「{name}」に上書き保存します。よろしいですか？\n"
-            f"{detail}\n\n"
-            "元のファイルを残したいときは、［名前を付けて保存］を選んでください。",
-            [("上書き保存", "replace", True), ("名前を付けて保存", "save_as", False),
-             ("キャンセル", "cancel", False)],
-            cancel_value="cancel")
-
     def _on_save(self, then: Optional[Callable[[], object]] = None) -> None:
-        if not self._can_save():
-            return
-        if self._save_path is None:
-            self._on_save_as(then)
-            return
-        # 上書き保存は、押すたびに確認を出す（F-03。2026-11-17 班長指示）
-        choice = self._ask_overwrite(self._save_path.name)
-        if choice == "save_as":
-            self._on_save_as(then)
-            return
-        if choice != "replace":
-            return
-        self._start_save(self._save_path, then)
+        """［保存］：保存の画面で場所と名前を指定して保存する（F-32）。
 
-    def _on_save_as(self, then: Optional[Callable[[], object]] = None) -> None:
-        if not self._can_save():
+        保存は、この1つだけとする（Ver200 の［保存］〔上書き保存〕と［名前を付けて保存］を、
+        2026-11-18 班長指示で1つにした）。既にあるファイルの名前を選んだときは、保存の画面
+        （Windows）が、置き換えてよいかを確かめる（F-03）。
+        """
+        if not self._can_save() or not self._confirm_cover_count():
             return
         # 名前の初めの値は、開いたファイル（保存した後は、保存したファイル）の名前に「_fax」を
         # 付けたもの（［ファイル］→［オプション］で付けないこともできる。F-32・F-35）
-        base = self._save_path if self._save_path is not None else self._name_base
+        base = self._save_base()
         initial_dir = str(base.parent if base is not None else self._doc_dir or self._initial_open_dir())
         initial_file = suggested_save_name(base, self._name_suffix()) if base else ""
         path_str = filedialog.asksaveasfilename(
-            title="名前を付けて保存", initialdir=initial_dir, initialfile=initial_file,
+            title="保存", initialdir=initial_dir, initialfile=initial_file,
             defaultextension=".pdf", filetypes=_PDF_FILETYPES, parent=self)
         if not path_str:
             return
@@ -1846,9 +1998,17 @@ class VaFaxApp(TkinterDnD.Tk):
             normalize_enabled=self.normalize_var.get(),
             dither_method=_DITHER_LABELS_REV[self.dither_label_var.get()],
             jpeg_quality=self.profile.jpeg_quality_steps[quality_index],
+            page_numbers=bool(self.page_numbers_var.get()),
         )
         capacity_method = self.capacity_method_var.get()
         reduction_strategy = _REDUCTION_STRATEGY_LABELS_REV[self.reduction_strategy_label_var.get()]
+
+        # 送付書があれば、保存の後に、その入力を「FAX送付書データ」に書く（F-36）
+        cover = self._current_cover()
+        self._saving_cover = None
+        if cover is not None:
+            cover_pages = sum(1 for ref in self.document.pages if (ref.source, ref.page) in cover.refs)
+            self._saving_cover = (cover.input.copy(), cover_pages, self.document.page_count)
 
         self._saving = True
         self.progress_var.set(0.0)
@@ -2015,6 +2175,8 @@ class VaFaxApp(TkinterDnD.Tk):
         self._update_title()
         self._update_command_states()
 
+        self._write_cover_input(target)
+
         notes = self._constraint_notes(outcome, mode)
         if notes:
             self.logger.info("保存したファイルが制約に合わない点：%d件", len(notes))
@@ -2052,6 +2214,141 @@ class VaFaxApp(TkinterDnD.Tk):
             messagebox.showerror(
                 APP_NAME, "フォルダを開けませんでした。保存先のフォルダを直接開いてください。", parent=self)
 
+    # ------------------------------------------------------------------ 送付書（F-36）
+
+    def _current_cover(self) -> Optional[CoverRecord]:
+        """いまの文書にある送付書（いちばん新しく入れたもの。なければNone）。"""
+        if self.document is None:
+            return None
+        present = {(ref.source, ref.page) for ref in self.document.pages}
+        for record in reversed(self._covers):
+            if record.refs & present:
+                return record
+        return None
+
+    def _cover_refs(self) -> set:
+        """これまでに入れた送付書のページ（（材料の番号, ページ）の組）すべて。"""
+        refs: set = set()
+        for record in self._covers:
+            refs |= record.refs
+        return refs
+
+    def _material_items(self) -> list[tuple[str, int]]:
+        """書類の一覧の材料：（ファイルの名前〔拡張子を除く〕, いまの文書に残っているページ数）を、
+        ページの表で最初に現れる順に並べたもの（送付書のページは除く）。"""
+        cover_refs = self._cover_refs()
+        counts: dict[int, int] = {}
+        for ref in self.document.pages:
+            if (ref.source, ref.page) in cover_refs:
+                continue
+            counts[ref.source] = counts.get(ref.source, 0) + 1
+        items = []
+        for source, count in counts.items():
+            path = self._source_paths[source] if source < len(self._source_paths) else None
+            if path is not None:
+                items.append((path.stem, count))
+        return items
+
+    def _cover_documents(self) -> list[cover_module.DocItem]:
+        return cover_module.documents_from_materials(self._material_items())
+
+    def _cover_initial(self, rebuild_documents: bool = False) -> cover_module.CoverInput:
+        """入力の画面の初めの値（F-36の4）。"""
+        documents = self._cover_documents()
+        record = self._current_cover()
+        previous = record.input.copy() if record is not None else None
+        if previous is not None and rebuild_documents:
+            previous.documents = documents
+        folder_latest = None
+        mints = None
+        if previous is None:
+            base = self._save_base()
+            folder = base.parent if base is not None else self._doc_dir
+            if folder is not None:
+                folder_latest = cover_module.latest_input_in_folder(folder, exclude=self._save_path)
+            if folder_latest is None:
+                mints = cover_module.read_mints_header(p for p in self._source_paths if p is not None)
+        return cover_module.initial_input(date.today(), documents, previous, folder_latest, mints)
+
+    def _on_cover(self, rebuild_documents: bool = False) -> None:
+        """［送付書］：入力の画面を開き、送付書を作って文書の先頭に入れる（前の送付書は差し替える）。"""
+        if not self._can_edit():
+            return
+        dialog = CoverSheetDialog(self, self._cover_initial(rebuild_documents), self.settings.cover_sender,
+                                  self._cover_documents, bring_to_front=_bring_to_front)
+        self.wait_window(dialog)
+        result = dialog.result
+        del dialog
+        _collect_closed_window()
+        if result is None or not self._can_edit():
+            return
+        self._put_cover(result)
+
+    def _on_page_double_click(self, index: int) -> None:
+        """ページのダブルクリック：送付書のページなら、入力の画面を開く（F-36。2026-11-18 班長指示）。"""
+        record = self._current_cover()
+        if record is None or not self._can_edit() or not 0 <= index < self.document.page_count:
+            return
+        ref = self.document.pages[index]
+        if (ref.source, ref.page) in record.refs:
+            self._on_cover()
+
+    def _put_cover(self, cover: cover_module.CoverInput) -> bool:
+        """送付書を作って、文書の先頭に入れる（前の送付書は取り除く）。"""
+        document = self.document
+        replacing = self._cover_refs()
+        other_pages = sum(1 for ref in document.pages if (ref.source, ref.page) not in replacing)
+        try:
+            data, cover_pages, total = cover_module.build_cover(
+                cover, self.settings.cover_sender, other_pages, self._paper_mm())
+            source = document_module.load_source(data, self._paper_mm())
+        except Exception as exc:  # 予期しない例外（F-22）：入力の中身はログに書かない（F-24）
+            self.logger.error("送付書の作成で予期しないエラー：%s", _format_exception_for_log(exc))
+            self._errors.record(exc, "送付書の作成")
+            messagebox.showerror(APP_NAME, f"送付書を作れませんでした。\n{CONTACT_NOTICE}", parent=self)
+            return False
+        added = document.put_front(source, replacing)
+        self._source_paths += [None] * (len(document.sources) - len(self._source_paths))
+        index = len(document.sources) - 1
+        self._covers.append(CoverRecord(frozenset((index, i) for i in range(cover_pages)), cover, total))
+        self.logger.info("送付書を作成：%dページ（送信枚数%d）", cover_pages, total)
+        self._set_status(f"送付書を作り、先頭に入れました（{cover_pages}ページ。送信枚数 本書を含め{total}枚）。")
+        self._edited(added, 0)
+        return True
+
+    def _confirm_cover_count(self) -> bool:
+        """保存の前に、送付書の送信枚数と、文書のページ数を比べる（F-36の7）。保存を続けるならTrue。"""
+        record = self._current_cover()
+        if record is None or record.total is None or record.total == self.document.page_count:
+            return True
+        choice = ask_choice(
+            self, "送信枚数の確認",
+            f"送付書に書いた送信枚数（{record.total}枚）が、いまの文書のページ数"
+            f"（{self.document.page_count}ページ）と合いません。\n"
+            "送付書を作った後に、ページを追加・削除したためです。\n\n"
+            "［送付書を直す］では、入力の画面を開きます（書類の一覧は、いまの文書から作り直します）。",
+            [("送付書を直す", "fix", True), ("このまま保存", "save", False), ("キャンセル", "cancel", False)],
+            cancel_value="cancel")
+        if choice == "fix":
+            self._on_cover(rebuild_documents=True)
+            return False
+        return choice == "save"
+
+    def _write_cover_input(self, target: Path) -> None:
+        """保存した文書に送付書があれば、その入力を「FAX送付書データ」に書く（F-36の5）。"""
+        saving_cover, self._saving_cover = self._saving_cover, None
+        if saving_cover is None:
+            return
+        cover, cover_pages, total = saving_cover
+        try:
+            cover_module.save_input(target, cover, cover_pages, total)
+        except OSError as exc:
+            self.logger.info("送付書の入力を保存できない：%s", type(exc).__name__)
+            messagebox.showwarning(
+                APP_NAME, "PDFは保存しましたが、送付書の入力を保存できませんでした"
+                f"（「{cover_module.DATA_DIRNAME}」フォルダに書き込めません）。\n"
+                "次にこのファイルを開いたときは、送付書の入力の初めの値が空になります。", parent=self)
+
     # ------------------------------------------------------------------ オプション（F-35）
 
     def _on_options(self) -> None:
@@ -2061,6 +2358,8 @@ class VaFaxApp(TkinterDnD.Tk):
         dialog = OptionsDialog(self, self.settings, self.profile.id)
         self.wait_window(dialog)
         result = dialog.result
+        del dialog
+        _collect_closed_window()
         if result is None:
             return
         self._apply_options(result)
@@ -2085,11 +2384,13 @@ class VaFaxApp(TkinterDnD.Tk):
         self.settings.append_fax_to_save_name = result["append_suffix"]
         self.settings.save_name_suffix = result["suffix"]
         self.settings.open_folder_after_save = result["open_folder_after_save"]
+        self.settings.cover_sender = result["cover_sender"]
         save_settings(self.settings)
 
         if defaults_changed:
             made_by_va_fax = self.document is not None and self.document.all_made_by_va_fax()
             self._apply_defaults_to_screen(made_by_va_fax=made_by_va_fax)
+        self._update_option_visibility()
         if profile_changed and self.document is not None:
             self._document_changed()
         self._update_title()   # 名前のない文書の題名（保存するときの名前）が変わりうる

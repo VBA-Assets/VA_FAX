@@ -26,7 +26,12 @@ WORK_DIR = ROOT / "build" / "work"
 COMBINED = WORK_DIR / "manual_build.md"
 
 # 頁番号（全ページ下部中央）。md-to-pdf（Puppeteer）のフッターテンプレート。
+# 見出しは、続く本文と同じページに置き、表はページの途中で分けない（ページの下に見出しや表の見出しの
+# 行だけが残らないように。1ページに収まらない表は分かれる。Ver210）。
 PDF_OPTIONS = """\
+css: |-
+  h1, h2, h3 { break-after: avoid; page-break-after: avoid; }
+  table { break-inside: avoid; page-break-inside: avoid; }
 pdf_options:
   format: A4
   margin: 18mm 16mm 22mm 16mm

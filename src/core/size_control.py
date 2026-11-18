@@ -96,9 +96,11 @@ def _render_page_locked(pdf_bytes: bytes, page_index: int, profile: Profile,
             if options.normalize_enabled
             else convert.PageNormalization(image, width_mm, height_mm, None, False, False, 1.0)
         )
+        # ページ番号（F-37）：作り直すときも、文書全体での通し番号を入れる
+        page_image = convert.apply_page_number(normalization.image, options, page_index, len(doc), dpi)
 
         if options.mode == "binarize":
-            bw, dither_used = convert.binarize_page(normalization.image, options.dither_method)
+            bw, dither_used = convert.binarize_page(page_image, options.dither_method)
             encoded = convert.encode_binarized_page(bw, dpi)
             log = PageConversionLog(
                 page_index=page_index, original_width_mm=width_mm, original_height_mm=height_mm,
@@ -107,7 +109,7 @@ def _render_page_locked(pdf_bytes: bytes, page_index: int, profile: Profile,
                 resolution_dpi=dpi, jpeg_quality=None,
             )
         else:
-            gray = convert.grayscale_page(normalization.image)
+            gray = convert.grayscale_page(page_image)
             quality = jpeg_quality if jpeg_quality is not None else profile.jpeg_quality_default
             encoded = convert.encode_grayscale_page(gray, dpi, quality)
             log = PageConversionLog(

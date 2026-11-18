@@ -4,7 +4,7 @@ VA mints の scripts/make_notices.py にならう）。
 
 exe に入る部品（Python・Tcl/Tk・pypdf と、pypdf が使う cryptography・cffi・fontTools・
 typing_extensions、pypdfium2〔PDFium〕・Pillow と、Pillow が使う defusedxml・tkinterdnd2・tkdnd・
-PyInstaller のブートローダー）と、リボンのボタンのアイコン（Fluent UI System Icons）の
+reportlab〔Ver210〕・PyInstaller のブートローダー）と、リボンのボタンのアイコン（Fluent UI System Icons）の
 ライセンスの全文を、いま入っている部品のファイルから集める。部品を足したり、版を上げたりしたら、
 作り直してコミットする（build/make_release.py が配布物に入れる）。exe に実際に入った部品は、
 ビルドの後に build/work/motfax/PYZ-00.toc・PKG-00.toc で確かめる（使っていない部品は
@@ -63,6 +63,8 @@ COMPONENTS = [
     ("PyInstaller", "pyinstaller", "実行ファイルの作成（ブートローダーが exe に入る）",
      "GNU General Public License 第2版以降（ブートローダーの例外条項付き。exe に入るブートローダーは、"
      "この例外により、VA FAX を MIT License で配ることを妨げない）", ["licenses/COPYING.txt"]),
+    ("ReportLab", "reportlab", "送付書（兼受領書）のページの作成（F-36。Ver210）", "BSD License（3条項）",
+     ["licenses/LICENSE"]),
     ("Fluent UI System Icons", None, "リボンのボタンのアイコン", "MIT License",
      [ROOT / "src" / "gui" / "icons" / "LICENSE"]),
 ]

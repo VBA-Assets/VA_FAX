@@ -12,7 +12,7 @@ from typing import Callable, Literal, Optional
 
 import pypdf
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from pypdf.generic import (BooleanObject, DecodedStreamObject, DictionaryObject, NameObject,
                            NumberObject)
 
@@ -383,6 +383,73 @@ class ConvertOptions:
     dither_method: BinarizeMethod = "auto"
     jpeg_quality: Optional[int] = None
     resolution_dpi: Optional[int] = None
+    page_numbers: bool = False   # 各ページの上端の中央に「1/12」の形の通し番号を書く（F-37。Ver210）
+
+
+# ---------------------------------------------------------------- ページ番号（F-37）
+
+# 番号の位置と大きさ（用紙の上端から5mm・10ポイント）。サービスの制約値ではなく、見た目の設計値
+# （FAX機が上端に印字する送信元の行に近い位置。2026-11-18 班長決定）。
+PAGE_NUMBER_TOP_MM = 5.0
+PAGE_NUMBER_POINTS = 10.0
+_PAGE_NUMBER_FONTS = (
+    r"C:\Windows\Fonts\arial.ttf",
+    r"C:\Windows\Fonts\msgothic.ttc",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+)
+_page_number_font_cache: dict[int, ImageFont.ImageFont] = {}
+
+
+def _page_number_font(size_px: int):
+    font = _page_number_font_cache.get(size_px)
+    if font is None:
+        for path in _PAGE_NUMBER_FONTS:
+            try:
+                font = ImageFont.truetype(path, size_px)
+                break
+            except OSError:
+                continue
+        else:
+            font = ImageFont.load_default(size=size_px)
+        _page_number_font_cache[size_px] = font
+    return font
+
+
+def page_number_text(number: int, total: int) -> str:
+    return f"{number}/{total}"
+
+
+def stamp_page_number(image: Image.Image, number: int, total: int, dpi: int) -> Image.Image:
+    """ページの画像（用紙を整えた後のもの）の上端の中央に、通し番号（例：1/12）を書く（F-37）。
+
+    番号の下地は白く塗る（ページの上端に文字・線があっても読めるように。前に番号を入れて保存した
+    ページに、もう一度入れるときは、前の番号を隠す）。画像の中身は書き換えるので、写しを返す。
+    """
+    stamped = image.convert("RGB") if image.mode != "RGB" else image.copy()
+    draw = ImageDraw.Draw(stamped)
+    size_px = max(8, round(PAGE_NUMBER_POINTS / 72 * dpi))
+    font = _page_number_font(size_px)
+    text = page_number_text(number, total)
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    width = right - left
+    x = (stamped.width - width) // 2 - left
+    y = round(PAGE_NUMBER_TOP_MM / MM_PER_INCH * dpi) - top
+    pad = max(2, size_px // 4)
+    # 下地の幅は、少なくとも「000/000」の幅にする（前に入れた番号が、桁の違いではみ出して見えないように）
+    g_left, _g_top, g_right, _g_bottom = draw.textbbox((0, 0), "000/000", font=font)
+    ground = max(width, g_right - g_left)
+    center = stamped.width / 2
+    draw.rectangle((center - ground / 2 - pad, y + top - pad, center + ground / 2 + pad, y + bottom + pad),
+                   fill="white")
+    draw.text((x, y), text, fill="black", font=font)
+    return stamped
+
+
+def apply_page_number(image: Image.Image, options: "ConvertOptions", index: int, total: int,
+                      dpi: int) -> Image.Image:
+    """ページ番号を入れる選択のときだけ、番号を書く（index は0始まり）。"""
+    return stamp_page_number(image, index + 1, total, dpi) if options.page_numbers else image
 
 
 def convert(pdf_bytes: bytes, profile: Profile, options: ConvertOptions,
@@ -422,9 +489,10 @@ def _convert_locked(pdf_bytes: bytes, profile: Profile, options: ConvertOptions,
                 if options.normalize_enabled
                 else PageNormalization(image, width_mm, height_mm, None, False, False, 1.0)
             )
+            page_image = apply_page_number(normalization.image, options, i, page_count, dpi)
 
             if options.mode == "binarize":
-                bw, dither_used = binarize_page(normalization.image, options.dither_method)
+                bw, dither_used = binarize_page(page_image, options.dither_method)
                 encoded = encode_binarized_page(bw, dpi)
                 page_logs.append(PageConversionLog(
                     page_index=i, original_width_mm=width_mm, original_height_mm=height_mm,
@@ -433,7 +501,7 @@ def _convert_locked(pdf_bytes: bytes, profile: Profile, options: ConvertOptions,
                     resolution_dpi=dpi, jpeg_quality=None,
                 ))
             elif options.mode == "grayscale":
-                gray = grayscale_page(normalization.image)
+                gray = grayscale_page(page_image)
                 encoded = encode_grayscale_page(gray, dpi, quality)
                 page_logs.append(PageConversionLog(
                     page_index=i, original_width_mm=width_mm, original_height_mm=height_mm,

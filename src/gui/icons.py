@@ -36,8 +36,8 @@ LARGE_ICON = 32  # 大きいボタンのアイコンの大きさ
 # ボタンの文字（改行・「…」・「...」を除く）→ アイコンの名前（icons/<名前>.png）
 BUTTON_ICONS = {
     # 「ファイル」の組（F-32）
+    "新規作成": "document_text",
     "開く": "folder_open",
-    "コピーして開く": "folder_open",
     "保存": "save",
     "名前を付けて保存": "save",
     # 「ページ」の組（F-33。回転・元に戻す・やり直すは、VA mintsと同じ自作のアイコン）
@@ -46,6 +46,9 @@ BUTTON_ICONS = {
     "回転": "arrow_rotate",
     "元に戻す": "arrow_undo",
     "やり直す": "arrow_redo",
+    # 「送付書」の組（F-36。Ver210）。文書に送付書があるときは、文字が「編集」になる
+    "作成": "document_header",
+    "編集": "document_header",
 }
 
 

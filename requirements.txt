@@ -19,3 +19,8 @@ pypdf>=5.0
 
 # 入力ファイルのドラッグ＆ドロップ（Windows・Mac用のtkdndを同梱）
 tkinterdnd2>=0.6
+
+# 送付書（兼受領書）のページの作成（F-36。Ver210。2026-11-18 班長承認。VA mints の証拠説明書と同じ部品）。
+# BSD License。URL から読む機能があるが、使わない（フォントは OS のフォルダのものだけを渡す。N-01）。
+# 使う charset-normalizer（MIT）は、XML の読み取りでだけ使われるので、exe からは外している（build/motfax.spec）。
+reportlab>=4.0

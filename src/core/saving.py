@@ -23,7 +23,7 @@ from typing import Callable, Optional, Sequence
 import pypdf
 
 from config.profiles import Profile
-from core import convert, size_control
+from core import as_is, convert, size_control
 from core.convert import ConvertOptions, PageConversionLog
 
 
@@ -99,6 +99,10 @@ def save_document(
     size_control.SizeLimitExceededError をそのまま送出する。書き込みに関わる誤りはSaveError。
     """
     if options.mode == "none":
+        # ページ番号（F-37）は、ページを画像にせず、PDFのまま重ねる。分割の前に入れるので、
+        # ファイルをまたいだ通し番号になる。
+        if options.page_numbers:
+            doc_bytes = as_is.stamp_numbers(doc_bytes)
         if capacity_method == "split":
             parts = size_control.split_pages_as_is(doc_bytes, profile)
         else:
@@ -126,13 +130,13 @@ def save_document(
                 raise SaveError(
                     "split_name_is_material",
                     f"分割してできるファイルの名前（{path.name}）が、開いた・追加したファイルと同じに"
-                    "なってしまいます。［名前を付けて保存］で、別の名前を指定してください。")
+                    "なってしまいます。［保存］で、別の名前を指定してください。")
         existing = [path.name for path in paths if path.exists()]
         if existing:
             raise SaveError(
                 "split_file_exists",
                 "分割してできるファイルと同じ名前のファイルが、既にあります：\n" + "、".join(existing)
-                + "\n該当のファイルを移動・削除するか、［名前を付けて保存］で別の名前を指定してから、"
+                + "\n該当のファイルを移動・削除するか、［保存］で別の名前を指定してから、"
                   "もう一度保存してください。")
 
     written: list[Path] = []

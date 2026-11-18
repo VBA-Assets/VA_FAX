@@ -125,6 +125,35 @@ def px(widget: tk.Misc, n: int) -> int:
     return int(round(n * scale(widget)))
 
 
+# 親のウィンドウがこれより小さいとき（初回のサービス選択の、1x1の仮のウィンドウ等）は、画面の中央に出す
+_PLACE_MIN_PARENT_PX = 200
+
+
+def place_over(window: tk.Toplevel, master: "tk.Misc | None") -> None:
+    """自作の画面（ダイアログ）を、親のウィンドウの中央（縦は上から1/3）に出す（2026-11-18 班長指摘：
+    位置を指定しないと、Windows の既定どおり画面の左上に出る）。
+
+    出す前に一度隠して大きさを決め、位置を決めてから出す（左上に一瞬出てから動くことがないように）。
+    親が隠れているとき（自動テストの、画面に出さないメイン画面など）は、隠したままにする（親が
+    出たときに、Tk が一緒に出す）。親が小さい・ないときは、画面の中央に出す。
+    """
+    window.withdraw()
+    window.update_idletasks()
+    width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+    parent = master.winfo_toplevel() if master is not None else None
+    parent_shown = parent is not None and bool(parent.winfo_viewable())
+    if parent_shown and min(parent.winfo_width(), parent.winfo_height()) >= _PLACE_MIN_PARENT_PX:
+        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - height) // 3
+        x, y = max(parent.winfo_rootx(), x), max(parent.winfo_rooty(), y)
+    else:
+        x = max(0, (window.winfo_screenwidth() - width) // 2)
+        y = max(0, (window.winfo_screenheight() - height) // 3)
+    window.geometry(f"+{x}+{y}")
+    if parent is None or parent_shown:
+        window.deiconify()
+
+
 def resolve_remove_cursor(widget: tk.Misc) -> str:
     """「一覧から取り除く」操作中に使うマウスカーソルの指定を返す（F-15）。
 

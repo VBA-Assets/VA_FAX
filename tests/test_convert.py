@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from dataclasses import replace
 
 import pypdf
@@ -331,3 +332,87 @@ def test_output_pages_match_profile_size_in_actual_pdf(motfax, movfax, sample_by
         b = sorted((b4_size.width_mm, b4_size.height_mm))
         assert abs(a[0] - b[0]) <= tolerance_mm
         assert abs(a[1] - b[1]) <= tolerance_mm
+
+
+# ---------------------------------------------------------------- ページ番号（F-37。Ver210）
+
+def _top_band_dark(image: Image.Image, dpi: int) -> tuple[int, int, int, int] | None:
+    """上端から15mmまでの帯の、黒い画素の範囲（なければNone）。"""
+    band = image.convert("L").crop((0, 0, image.width, round(15 / 25.4 * dpi)))
+    return band.point(lambda v: 255 if v < 128 else 0).getbbox()
+
+
+def test_stamp_page_number_at_top_center():
+    from core.convert import PAGE_NUMBER_TOP_MM, stamp_page_number
+    dpi = 200
+    page = Image.new("RGB", (1654, 2339), "white")
+    stamped = stamp_page_number(page, 3, 12, dpi)
+    assert page.getbbox() is None or page.convert("L").getextrema() == (255, 255)   # 元の画像は変えない
+    left, top, right, bottom = _top_band_dark(stamped, dpi)
+    assert abs((left + right) / 2 - page.width / 2) < 10                          # 中央
+    assert abs(top - PAGE_NUMBER_TOP_MM / 25.4 * dpi) < 8                         # 上端から5mm
+    assert bottom - top < 10 / 72 * dpi * 1.2                                    # 10ポイントほどの高さ
+
+
+def test_stamp_page_number_has_white_ground():
+    """下地を白く塗る（前に入れた番号や、上端の線を隠して読めるようにする）。"""
+    from core.convert import stamp_page_number
+    page = Image.new("RGB", (1654, 2339), "black")
+    stamped = stamp_page_number(page, 1, 2, 200).convert("L")
+    assert stamped.getextrema() == (0, 255)
+    assert stamped.crop((0, 0, 1654, 300)).histogram()[255] > 0
+
+
+def test_convert_with_page_numbers(motfax, sample_bytes):
+    """変換したページの上端に番号が入る。番号は画像の一部で、テキストデータは入らない。"""
+    data = sample_bytes("sample01_a4_text.pdf")
+    plain = convert(data, motfax, ConvertOptions(mode="binarize"))
+    numbered = convert(data, motfax, ConvertOptions(mode="binarize", page_numbers=True))
+    assert _extract_text(numbered.build_pdf()).strip() == ""
+    for before, after in zip(plain.page_images, numbered.page_images):
+        assert _top_band_dark(Image.open(io.BytesIO(before)), 200) is None
+        assert _top_band_dark(Image.open(io.BytesIO(after)), 200) is not None
+
+
+def test_page_numbers_follow_normalization(motfax, sample_bytes):
+    """B4のページは、A4に縮めた後の上端の中央に、同じ大きさで入る。"""
+    data = sample_bytes("sample02_b4_text.pdf")
+    result = convert(data, motfax, ConvertOptions(mode="grayscale", page_numbers=True))
+    image = Image.open(io.BytesIO(result.page_images[0]))
+    left, top, right, bottom = _top_band_dark(image, 200)
+    assert abs((left + right) / 2 - image.width / 2) < 10 and abs(top - 5 / 25.4 * 200) < 8
+
+
+def test_rerendered_page_keeps_the_same_number(motfax, sample_bytes):
+    """容量超過で作り直したページも、文書全体での通し番号を入れる（帯の画素が一致する）。"""
+    from core import size_control
+    data = sample_bytes("sample01_a4_text.pdf")
+    options = ConvertOptions(mode="binarize", page_numbers=True)
+    result = convert(data, motfax, options)
+    again, _log = size_control._render_page(data, 1, motfax, options, 200, None)
+    band = (0, 0, 1654, 120)
+    first = Image.open(io.BytesIO(result.page_images[1])).convert("L").crop(band)
+    second = Image.open(io.BytesIO(again)).convert("L").crop(band)
+    assert first.tobytes() == second.tobytes()
+
+
+def test_as_is_numbers_are_upright_embedded_and_cover_old_number(sample_bytes, paper_a4=(210, 297)):
+    """PDFのまま重ねる番号（「何もしない」）：回したページでも表示どおりの向き、字は埋め込み、
+    画像にする変換と同じ位置。"""
+    import pypdfium2 as pdfium
+    from core import as_is
+    from core.document import Document, load_source
+    doc = Document()
+    doc.add_source(load_source(sample_bytes("sample01_a4_text.pdf"), paper_a4))
+    doc.rotate([1], 90)
+    out = as_is.stamp_numbers(doc.assemble())
+    reader = pypdf.PdfReader(io.BytesIO(out))
+    assert [page.rotation for page in reader.pages] == [0, 0, 0]
+    fonts = [f.get_object() for f in reader.pages[0]["/Resources"]["/Font"].values()]
+    if Path(r"C:\Windows\Fonts\arial.ttf").exists():          # Windows では Arial を埋め込む
+        assert any("ArialMT" in str(f.get("/BaseFont")) and "/FontDescriptor" in f for f in fonts)
+    pdf = pdfium.PdfDocument(out)
+    for index in (0, 1):
+        image = pdf[index].render(scale=200 / 72).to_pil()
+        left, top, right, _bottom = _top_band_dark(image, 200)
+        assert abs((left + right) / 2 - image.width / 2) < 12 and abs(top - 5 / 25.4 * 200) < 10

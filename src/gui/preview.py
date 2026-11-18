@@ -26,6 +26,7 @@ from PIL import Image, ImageTk
 
 from config.profiles import Profile
 from core import convert
+from core import as_is
 from core.convert import ConvertOptions
 from gui import theme
 
@@ -117,6 +118,7 @@ def render_page_preview(pdf_bytes: bytes, page_index: int, profile: Profile,
             page = doc[page_index]
             width_mm, height_mm = convert.get_page_size_mm(page)
             image = convert.rasterize_page(page, dpi)
+            page_count = len(doc)
         finally:
             doc.close()
     normalization = (
@@ -124,10 +126,11 @@ def render_page_preview(pdf_bytes: bytes, page_index: int, profile: Profile,
         if options.normalize_enabled
         else convert.PageNormalization(image, width_mm, height_mm, None, False, False, 1.0)
     )
+    page_image = convert.apply_page_number(normalization.image, options, page_index, page_count, dpi)
     if options.mode == "binarize":
-        bw, _ = convert.binarize_page(normalization.image, options.dither_method)
+        bw, _ = convert.binarize_page(page_image, options.dither_method)
         return bw.convert("RGB")
-    gray = convert.grayscale_page(normalization.image)
+    gray = convert.grayscale_page(page_image)
     return gray.convert("RGB")
 
 
@@ -166,6 +169,8 @@ class PreviewPane(ttk.Frame):
         self.on_selection_changed: Optional[Callable[[], None]] = None
         # サムネイル・一覧の余白を右クリックしたとき（画面の座標を渡す。メニューは画面の側が出す）
         self.on_context_menu: Optional[Callable[[int, int], None]] = None
+        # ページ（サムネイル・拡大表示）をダブルクリックしたとき（ページの番号を渡す。F-36の送付書の編集）
+        self.on_page_double_click: Optional[Callable[[int], None]] = None
         self.remove_cursor = theme.REMOVE_CURSOR_FALLBACK                  # 取り除きの間のカーソル
         self._press: Optional[tuple[int, int, int]] = None                 # 押したページ・位置
         self._press_widget: Optional[tk.Misc] = None
@@ -266,6 +271,7 @@ class PreviewPane(ttk.Frame):
         self._large_label.bind("<MouseWheel>", self._on_large_mousewheel)
         self._large_label.bind("<Button-4>", self._on_large_mousewheel)
         self._large_label.bind("<Button-5>", self._on_large_mousewheel)
+        self._large_label.bind("<Double-Button-1>", self._on_large_double_click)
         self._large_label.grid(row=0, column=0, sticky="nsew")
 
         self._status_var = tk.StringVar(value=EMPTY_STATUS_TEXT)
@@ -385,6 +391,7 @@ class PreviewPane(ttk.Frame):
                 widget.bind("<ButtonPress-1>", lambda e, idx=i: self._on_thumb_press(idx, e))
                 widget.bind("<B1-Motion>", self._on_thumb_motion)
                 widget.bind("<ButtonRelease-1>", self._on_thumb_release)
+                widget.bind("<Double-Button-1>", lambda e, idx=i: self._on_thumb_double_click(idx))
                 for sequence in self._context_sequences():
                     widget.bind(sequence, lambda e, idx=i: self._on_thumb_context(idx, e))
             self._thumbnail_labels[i] = label
@@ -553,6 +560,23 @@ class PreviewPane(ttk.Frame):
         self._canvas.focus_set()
         if self.on_context_menu is not None:
             self.on_context_menu(event.x_root, event.y_root)
+        return "break"
+
+    def _on_thumb_double_click(self, index: int) -> str:
+        """サムネイルのダブルクリック：そのページだけを選び、画面の側に知らせる（送付書の編集。F-36）。"""
+        self._cancel_drag()
+        self._press = None
+        self._collapse_on_release = False
+        self._apply_selection({index}, index, anchor=index)
+        if self.on_page_double_click is not None:
+            self.on_page_double_click(index)
+        return "break"
+
+    def _on_large_double_click(self, _event=None) -> str:
+        """拡大表示のダブルクリック：表示しているページを、画面の側に知らせる（送付書の編集。F-36）。"""
+        index = self.active_page()
+        if index is not None and self.on_page_double_click is not None:
+            self.on_page_double_click(index)
         return "break"
 
     def _on_thumb_press(self, index: int, event) -> str:
@@ -838,8 +862,16 @@ class PreviewPane(ttk.Frame):
             dpi = request.profile.resolution_dpi_default if request.is_large else THUMBNAIL_DPI
             try:
                 # 圧縮方式「何もしない」（F-11）のときは、材料のページをそのまま表示する
-                if request.raw or request.options.mode == "none":
+                if request.raw:
                     image = render_page_raw(request.pdf_bytes, request.page_index, dpi)
+                elif request.options.mode == "none":
+                    # 「何もしない」：ページをそのまま表示する。ページ番号を入れるときは、保存と同じく
+                    # PDFのまま番号を重ねたページを表示する（F-37）
+                    if request.options.page_numbers:
+                        image = render_page_raw(
+                            as_is.stamp_numbers(request.pdf_bytes, only_page=request.page_index), 0, dpi)
+                    else:
+                        image = render_page_raw(request.pdf_bytes, request.page_index, dpi)
                 else:
                     image = render_page_preview(
                         request.pdf_bytes, request.page_index, request.profile, request.options, dpi)

@@ -81,7 +81,7 @@ def test_legacy_v1_settings_json_loads_without_error(appdata):
     # 保存し直すと新形式で書き直され、旧キーは残らない
     save_settings(loaded)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["version"] == 3
+    assert raw["version"] == 4
     assert "debug_mode" not in raw
     assert "presets" not in raw
 
@@ -234,12 +234,14 @@ def test_invalid_window_geometry_is_dropped(appdata, value):
 
 
 def test_settings_file_holds_no_file_names(appdata):
-    """設定ファイルに書くのは、フォルダの場所・プロファイル・既定設定・ウィンドウの大きさだけ（N-06）。"""
+    """設定ファイルに書くのは、フォルダの場所・プロファイル・既定設定・ウィンドウの大きさと、送付書の
+    送信者（事務所自身の情報。F-36）だけ（N-06）。送付書の宛先・事件・書類の一覧は書かない。"""
     save_settings(Settings(last_input_dir=r"C:\案件", profile_id="motfax"))
     raw = json.loads(settings_path().read_text(encoding="utf-8"))
     assert set(raw) == {"version", "last_input_dir", "profile_id", "first_run_completed",
                         "window_geometry", "window_maximized", "append_fax_to_save_name",
-                        "save_name_suffix", "open_folder_after_save", "defaults"}
+                        "save_name_suffix", "open_folder_after_save", "defaults", "cover_sender"}
+    assert set(raw["cover_sender"]) == {"office", "address", "tel", "fax", "lawyer"}
 
 
 def test_append_fax_option_defaults_to_on_and_round_trips(appdata):
@@ -261,3 +263,33 @@ def test_invalid_suffix_falls_back_to_fax(appdata, value):
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"save_name_suffix": value}), encoding="utf-8")
     assert load_settings().save_name_suffix == "_fax"
+
+
+# ---------------------------------------------------------------- 送付書の送信者（F-36。Ver210）
+
+def test_cover_sender_round_trips(appdata):
+    from core.cover_sheet import Sender
+    sender = Sender(office="架空法律事務所", address="〒000-0000\n架空県架空市1-2-3", tel="00-0000-0000",
+                    fax="00-0000-0001", lawyer="甲野太郎")
+    save_settings(Settings(cover_sender=sender))
+    assert load_settings().cover_sender == sender
+
+
+def test_cover_sender_falls_back_when_missing_or_broken(appdata):
+    from core.cover_sheet import Sender
+    path = appdata / "VA_FAX" / "settings.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 3, "profile_id": "motfax"}), encoding="utf-8")
+    assert load_settings().cover_sender == Sender()          # Ver200 の設定ファイル
+    path.write_text(json.dumps({"version": 4, "cover_sender": "壊れた値"}), encoding="utf-8")
+    assert load_settings().cover_sender == Sender()
+
+
+def test_page_numbers_default_on_and_round_trips(appdata):
+    """ページ番号（F-37）：初めの値はオン。オフにしたら、覚える。Ver200 の設定ファイルではオン。"""
+    assert load_settings().defaults.page_numbers is True
+    save_settings(Settings(defaults=ConversionDefaults(page_numbers=False)))
+    assert load_settings().defaults.page_numbers is False
+    path = appdata / "VA_FAX" / "settings.json"
+    path.write_text(json.dumps({"version": 3, "defaults": {"compression_policy": "none"}}), encoding="utf-8")
+    assert load_settings().defaults.page_numbers is True
