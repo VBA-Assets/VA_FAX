@@ -1,8 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 # VA FAX のPyInstaller定義（onefile方式。CLAUDE.md第4章「後方支援」）。
+# spec は、雛形と違い build/ に置く（フォルダの分け方の例外。2026-11-19 班長決定。CLAUDE.md「標準と違う所」）。
 #
 # ビルド方法（リポジトリルートで実行）:
-#   python -m PyInstaller build/motfax.spec --distpath dist --workpath build/work -y
+#   python -m PyInstaller build/va_fax.spec --distpath dist --workpath build/work -y
+# dist/VA_FAX.exe を誰かが開いていて上書きできないときは、--distpath dist_next で作り、
+# scripts/build_release.py に dist_next を渡す。
 #
 # 同梱が必要なもの:
 # - resources/profiles/*.json … 同梱サービスプロファイル（F-27。config/profiles.pyが
@@ -14,8 +17,9 @@
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 datas = [("../src/resources/profiles", "resources/profiles")]
-# アプリケーションアイコン（タイトルバー用。build/make_icon.pyで生成）
-datas += [("../src/resources/icon.ico", "resources")]
+# アプリケーションアイコン（タイトルバー用。build/make_icon.pyで生成。gui/theme.pyが凍結時に
+# sys._MEIPASS/assets を見るため、同じ相対位置に配置する）
+datas += [("../assets/VA_FAX.ico", "assets")]
 # 「一覧から取り除く」操作中のマウスカーソル（F-15。build/make_cursor.pyで生成）
 datas += [("../src/resources/trash.cur", "resources")]
 # リボンのボタンのアイコン（F-15。LICENSEはFluent UI System IconsのMIT License）
@@ -51,7 +55,7 @@ exe = EXE(
     # 実行ファイル名は空白を用いず VA_FAX とする（N-07）
     name="VA_FAX",
     # エクスプローラー・タスクバーに表示されるexe自体のアイコン
-    icon="../src/resources/icon.ico",
+    icon="../assets/VA_FAX.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

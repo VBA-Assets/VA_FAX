@@ -47,16 +47,17 @@ from gui.icons import IconSet
 from gui.preview import PreviewPane
 from gui.ribbon import Ribbon
 from logging_setup import setup_logger
-from version import __version__
-
-APP_NAME = "VA FAX"
+from version import ABOUT_LINE, APP_NAME, VERSION_LABEL
 # 新規作成した文書の、保存するまでの名前（題名。VA Document と同じ）
 NEW_DOCUMENT_NAME = "新しい文書"
 # 新規作成した文書に、ファイルのページがなく送付書だけがあるときの、保存の名前の元
 COVER_ONLY_NAME = "送付書.pdf"
 EMPTY_DOCUMENT_TEXT = ("ページがありません。［追加］か、ファイルのドラッグ＆ドロップでページを入れてください。"
                        "送付書は、「送付書」の組の［作成］で作れます。")
-CONTACT_NOTICE = "問題が解決しない場合は、VBAアセット（vba-assets.net）のお問い合わせ窓口までご連絡ください。"
+# 予期しない誤りの知らせに添える案内（標準 02「メッセージとエラー」：例外の文は出さず、要旨と、
+# ［診断情報をコピー］の案内を出す。誤りの型と場所は、診断情報に記録する）
+CONTACT_NOTICE = ("続くときは、［ヘルプ］→［診断情報をコピー］で診断情報をコピーして、"
+                  "VA FAX の記事のコメント欄でお知らせください。")
 
 # 一度の操作（ドロップ・ダイアログ選択）でこの件数を超えて追加する場合は確認を挟む
 # （フォルダ内の大量のファイルを誤ってまとめて落とした場合等の歯止め。件数のハード上限は
@@ -262,8 +263,8 @@ class ProfileChoiceFrame(ttk.Frame):
             ttk.Radiobutton(frame, text=_profile_constraint_text(profile), variable=self.var,
                             value=pid).pack(anchor="w")
             if profile.reference_notice:
-                ttk.Label(frame, text=profile.reference_notice, foreground=theme.COLOR_WARNING,
-                          anchor="w", justify="left", wraplength=460).pack(anchor="w", padx=(20, 0))
+                ttk.Label(frame, text=profile.reference_notice, foreground=theme.WARNING,
+                          anchor="w", justify="left", wraplength=theme.px(frame, 460)).pack(anchor="w", padx=(20, 0))
 
     @property
     def selected_id(self) -> str:
@@ -330,8 +331,8 @@ class CustomProfileDialog(tk.Toplevel):
         self.result: Optional[Profile] = None
         self._current = current
 
-        ttk.Label(self, text="お使いのサービスの公表仕様をご確認のうえ、各項目を入力してください。",
-                  foreground=theme.COLOR_WARNING, anchor="w", justify="left", wraplength=440).pack(
+        ttk.Label(self, text="お使いのサービスの公表仕様を確かめて、各項目を入力してください。",
+                  foreground=theme.WARNING, anchor="w", justify="left", wraplength=theme.px(self, 440)).pack(
             fill="x", padx=12, pady=(12, 6))
 
         form = ttk.Frame(self)
@@ -452,7 +453,7 @@ class DefaultsFrame(ttk.Frame):
                 current.size_reduction_strategy, _REDUCTION_STRATEGY_LABELS["culprit_only"]))
 
         ttk.Label(self, text="ファイルを開いたときの、処理内容の初めの値です。",
-                  foreground=theme.COLOR_MUTED).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+                  foreground=theme.NOTE).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         opt = ttk.Frame(self)
         opt.grid(row=1, column=0, columnspan=3, sticky="we")
 
@@ -518,7 +519,7 @@ class DefaultsFrame(ttk.Frame):
         self._page_numbers_check.grid(row=12, column=0, columnspan=3, sticky="w", padx=8)
 
         self._none_note_var = tk.StringVar()
-        ttk.Label(opt, textvariable=self._none_note_var, foreground=theme.COLOR_MUTED,
+        ttk.Label(opt, textvariable=self._none_note_var, foreground=theme.NOTE,
                   justify="left").grid(row=13, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
         self._update_compression_states()
@@ -593,7 +594,7 @@ class OptionsDialog(tk.Toplevel):
         self._suffix_entry = ttk.Entry(save_tab, textvariable=self._suffix_var, width=16)
         self._suffix_entry.grid(row=1, column=1, sticky="w", pady=(2, 0))
         self._suffix_example_var = tk.StringVar()
-        ttk.Label(save_tab, textvariable=self._suffix_example_var, foreground=theme.COLOR_MUTED,
+        ttk.Label(save_tab, textvariable=self._suffix_example_var, foreground=theme.NOTE,
                   justify="left").grid(row=2, column=0, columnspan=2, sticky="w", padx=(24, 0), pady=(2, 10))
         self._suffix_var.trace_add("write", lambda *_a: self._update_suffix_state())
 
@@ -601,7 +602,7 @@ class OptionsDialog(tk.Toplevel):
             save_tab, text="保存の後に、保存したフォルダを開く", variable=self._open_folder_var,
         ).grid(row=3, column=0, columnspan=2, sticky="w")
         ttk.Label(save_tab, text="FAXサービスの画面へアップロードするときに、ファイルを探す手間が減ります。",
-                  foreground=theme.COLOR_MUTED).grid(row=4, column=0, columnspan=2, sticky="w", padx=(24, 0))
+                  foreground=theme.NOTE).grid(row=4, column=0, columnspan=2, sticky="w", padx=(24, 0))
 
         # ---- 処理内容の既定値
         self.defaults_frame = DefaultsFrame(self.notebook, settings.defaults)
@@ -614,7 +615,7 @@ class OptionsDialog(tk.Toplevel):
         self.profile_frame = ProfileChoiceFrame(profile_tab, current_profile_id)
         self.profile_frame.pack(fill="x")
         self._custom_button = theme.create_button(
-            profile_tab, text="カスタムの内容を入力...", command=self._edit_custom)
+            profile_tab, text="カスタムの内容を入力…", command=self._edit_custom)
         self._custom_button.pack(anchor="w", pady=(8, 0))
         self.profile_frame.var.trace_add("write", lambda *_a: self._update_custom_button())
 
@@ -706,7 +707,7 @@ class ChoiceDialog(tk.Toplevel):
         self.title(title)
         self.resizable(False, False)
         self.result: Optional[str] = cancel_value
-        ttk.Label(self, text=message, anchor="w", justify="left", wraplength=480).pack(
+        ttk.Label(self, text=message, anchor="w", justify="left", wraplength=theme.px(self, 480)).pack(
             fill="x", padx=16, pady=(16, 12))
         row = ttk.Frame(self)
         row.pack(fill="x", padx=16, pady=(0, 14))
@@ -737,7 +738,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def __init__(self, settings: Settings, profile: Profile):
         super().__init__()
-        theme.apply_flat_theme(self)
+        theme.apply_theme(self)
         theme.apply_app_icon(self)
         self.settings = settings
         self.profile = profile
@@ -775,8 +776,9 @@ class VaFaxApp(TkinterDnD.Tk):
 
         self.title(APP_NAME)
         self.resizable(True, True)
-        self.minsize(900, 700)
-        self.configure(bg=theme.COLOR_BG)
+        # 大きさはピクセル。高 DPI に対応したので、拡大率に合わせて掛ける（theme.px。標準 02「テーマとウィジェット」）
+        self.minsize(theme.px(self, 900), theme.px(self, 700))
+        self.configure(bg=theme.WINDOW_BG)
         self._restore_window_state()
 
         self._build_variables()
@@ -820,20 +822,18 @@ class VaFaxApp(TkinterDnD.Tk):
     def _build_menu(self) -> None:
         menubar = tk.Menu(self)
 
-        # ［ファイル］（F-32。リボンの「ファイル」の組と同じ操作）
+        # ［ファイル］（F-32。リボンの「ファイル」の組と同じ操作）。並びは標準 02「メニュー」のとおり
+        # 新規作成・開く・保存・閉じる／区切り／オプション。画面が開く項目には全角の「…」を付ける。
+        # ［終了］は置かない（ツールはウィンドウの［×］で閉じる。2026-11-19 の指針に合わせて外した）。
         file_menu = tk.Menu(menubar, tearoff=False)
         file_menu.add_command(label="新規作成", accelerator="Ctrl+N", command=self._on_new)
-        file_menu.add_command(label="開く...", accelerator="Ctrl+O", command=self._on_open)
-        file_menu.add_separator()
-        # 保存は［保存...］の1つ（保存の画面で場所と名前を指定する。上書きは、同じ名前を選ぶと
+        file_menu.add_command(label="開く…", accelerator="Ctrl+O", command=self._on_open)
+        # 保存は［保存…］の1つ（保存の画面で場所と名前を指定する。上書きは、同じ名前を選ぶと
         # Windows が確かめる。2026-11-18 班長指示）
-        file_menu.add_command(label="保存...", accelerator="Ctrl+S", command=self._on_save)
-        file_menu.add_separator()
+        file_menu.add_command(label="保存…", accelerator="Ctrl+S", command=self._on_save)
         file_menu.add_command(label="閉じる", command=self._on_close_document)
         file_menu.add_separator()
-        file_menu.add_command(label="オプション...", command=self._on_options)
-        file_menu.add_separator()
-        file_menu.add_command(label="終了", command=self._on_quit)
+        file_menu.add_command(label="オプション…", command=self._on_options)
         menubar.add_cascade(label="ファイル", menu=file_menu)
 
         # Ver130 までの［設定］メニュー（FAXサービスを変更・変換の既定設定）は、［ファイル］→
@@ -844,20 +844,18 @@ class VaFaxApp(TkinterDnD.Tk):
         help_menu = tk.Menu(menubar, tearoff=False)
         help_menu.add_command(label="診断情報をコピー", command=self._copy_diagnostics)
         help_menu.add_separator()
-        help_menu.add_command(label="VA FAX について", command=self._show_about)
+        help_menu.add_command(label=f"{APP_NAME} について", command=self._show_about)
         menubar.add_cascade(label="ヘルプ", menu=help_menu)
 
         self.config(menu=menubar)
         self._file_menu = file_menu
 
+    def about_text(self) -> str:
+        """「について」の5行（標準 01「について」：名前と版・1行の説明・空の行・VBAアセット・ライセンス）。"""
+        return f"{APP_NAME}  {VERSION_LABEL}\n{ABOUT_LINE}\n\nVBAアセット（vba-assets.net）\nMIT License"
+
     def _show_about(self) -> None:
-        messagebox.showinfo(
-            "VA FAX",
-            f"VA FAX  {__version__}\n"
-            "インターネットFAX送信用PDF変換ツール\n\n"
-            "VBAアセット（vba-assets.net）\nMIT License",
-            parent=self,
-        )
+        messagebox.showinfo(APP_NAME, self.about_text(), parent=self)
 
     # ------------------------------------------------------------------ 診断情報
 
@@ -866,7 +864,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.clipboard_clear()
         self.clipboard_append(self._diagnostic_text())
         messagebox.showinfo(
-            "VA FAX",
+            APP_NAME,
             "診断情報をコピーしました。\n\n"
             "不具合を相談するときは、これを貼り付けて渡してください。版・環境・設定の数値・"
             "件数・誤りの起きた場所だけが入っていて、開いた・保存したファイルの名前や、ファイル・"
@@ -885,12 +883,12 @@ class VaFaxApp(TkinterDnD.Tk):
         profile = self.profile
         defaults = self.settings.defaults
         lines = [
-            f"VA FAX 診断情報（{datetime.now():%Y-%m-%d %H:%M}）",
+            f"{APP_NAME} 診断情報（{datetime.now():%Y-%m-%d %H:%M}）",
             "※ 開いた・保存したファイルの名前、ファイルやフォルダの場所、利用者とPCの名前は"
             "入っていません。",
             "",
         ]
-        lines += ["■ 環境"] + d.environment_lines(self, "VA FAX", __version__) + [""]
+        lines += ["■ 環境"] + d.environment_lines(self, APP_NAME, VERSION_LABEL) + [""]
 
         page_limit = "なし" if profile.page_count_limit is None else f"{profile.page_count_limit}ページ"
         lines += [
@@ -950,7 +948,7 @@ class VaFaxApp(TkinterDnD.Tk):
     def _set_settings_menu_enabled(self, enabled: bool) -> None:
         """保存の実行中はプロファイル・既定設定の変更を禁止する（B-1。容量判定等の途中すり替わり防止）。"""
         state = "normal" if enabled else "disabled"
-        self._file_menu.entryconfig("オプション...", state=state)
+        self._file_menu.entryconfig("オプション…", state=state)
 
     def _build_widgets(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -966,7 +964,7 @@ class VaFaxApp(TkinterDnD.Tk):
         # そのまま確実に反映されるため、Buttonで生じたような表示崩れの懸念はない。
         self._paned = tk.PanedWindow(
             self, orient="horizontal", sashrelief="flat", sashwidth=6,
-            bg=theme.COLOR_BORDER, bd=0)
+            bg=theme.BORDER, bd=0)
         self._paned.grid(row=1, column=0, sticky="nsew")
 
         # プレビュー欄のサムネイルが、ページの一覧を兼ねる（F-15の4・F-33）。
@@ -998,7 +996,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.diagnosis_text = tk.Text(controls_frame, height=7, width=64, state="disabled", wrap="word")
         self.diagnosis_text.grid(row=1, column=1, columnspan=2, sticky="nswe", **field_pad)
 
-        options = ttk.Labelframe(controls_frame, text="処理内容の選択（保存の前にご確認ください）")
+        options = ttk.Labelframe(controls_frame, text="処理内容の選択（保存の前に確かめてください）")
         options.grid(row=2, column=0, columnspan=3, sticky="we", padx=10, pady=6)
         self._build_options(options)
 
@@ -1010,12 +1008,12 @@ class VaFaxApp(TkinterDnD.Tk):
         # 処理ログの欄は、Ver200でなくした（2026-11-17 班長指示）。開いた・保存した等の結果を、
         # 1行で示す（ページごとの処理内容は、ログファイルにだけ残す。F-17・F-24）。
         ttk.Label(controls_frame, textvariable=self.status_var, anchor="w", justify="left",
-                  wraplength=640).grid(row=4, column=0, columnspan=3, sticky="we", **pad)
+                  wraplength=theme.px(self, 640)).grid(row=4, column=0, columnspan=3, sticky="we", **pad)
 
         ttk.Label(
             controls_frame,
             text="※ FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。",
-            foreground=theme.COLOR_MUTED, anchor="w", justify="left",
+            foreground=theme.NOTE, anchor="w", justify="left",
         ).grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
 
         # ファイルのドラッグ＆ドロップ（F-32・F-33）：文書を開いていないときは開き、
@@ -1167,7 +1165,7 @@ class VaFaxApp(TkinterDnD.Tk):
         ttk.Radiobutton(parent, text=_MODE_BINARIZE_TEXT, variable=self.mode_var, value="binarize",
                         command=self._update_mode_widgets).grid(row=1, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ カラー・階調情報が失われますが、FAXで最も一般的な原稿形式です。",
-                  foreground=theme.COLOR_MUTED).grid(row=1, column=1, columnspan=2, sticky="w")
+                  foreground=theme.NOTE).grid(row=1, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="　ディザ方式：").grid(row=2, column=0, sticky="e", padx=(24, 0))
         self.dither_combo = ttk.Combobox(
@@ -1178,7 +1176,7 @@ class VaFaxApp(TkinterDnD.Tk):
         ttk.Radiobutton(parent, text=_MODE_GRAYSCALE_TEXT, variable=self.mode_var, value="grayscale",
                         command=self._update_mode_widgets).grid(row=3, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ サービス側で黒つぶれ・白飛びが起こる場合があります。"
-                              "実際に送信してご確認ください。", foreground=theme.COLOR_MUTED).grid(
+                              "実際に送信して確かめてください。", foreground=theme.NOTE).grid(
             row=3, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="　JPEG品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
@@ -1192,7 +1190,7 @@ class VaFaxApp(TkinterDnD.Tk):
                         command=self._update_mode_widgets).grid(row=5, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ ページを画像にしません。文字データ・カラーが残り、"
                               "サービスによっては送信できない場合があります。",
-                  foreground=theme.COLOR_MUTED).grid(row=5, column=1, columnspan=2, sticky="w")
+                  foreground=theme.NOTE).grid(row=5, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="容量超過時の処理方式：").grid(
             row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
@@ -1201,7 +1199,7 @@ class VaFaxApp(TkinterDnD.Tk):
             parent, text=_CAPACITY_REDUCE_TEXT, variable=self.capacity_method_var,
             value="reduce_resolution", command=self._update_strategy_combo_state)
         self.reduce_resolution_radio.grid(row=7, column=0, sticky="w", padx=8)
-        ttk.Label(parent, text="※ 送信回数を増やさずに済みます。", foreground=theme.COLOR_MUTED).grid(
+        ttk.Label(parent, text="※ 送信回数を増やさずに済みます。", foreground=theme.NOTE).grid(
             row=7, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="　削減方式：").grid(row=8, column=0, sticky="e", padx=(24, 0))
@@ -1214,7 +1212,7 @@ class VaFaxApp(TkinterDnD.Tk):
             parent, text=_CAPACITY_SPLIT_TEXT, variable=self.capacity_method_var,
             value="split", command=self._update_strategy_combo_state)
         self.split_radio.grid(row=9, column=0, sticky="w", padx=8)
-        ttk.Label(parent, text="※ 画質を下げずに済みます。", foreground=theme.COLOR_MUTED).grid(
+        ttk.Label(parent, text="※ 画質を下げずに済みます。", foreground=theme.NOTE).grid(
             row=9, column=1, columnspan=2, sticky="w")
 
         # 「何もしない」（F-13。2026-11-17 班長指示）：上限を超えていても、そのまま保存する
@@ -1223,7 +1221,7 @@ class VaFaxApp(TkinterDnD.Tk):
             value="none", command=self._update_strategy_combo_state).grid(
             row=10, column=0, sticky="w", padx=8)
         ttk.Label(parent, text="※ 上限を超えていても、そのまま保存します（保存の後に知らせます）。",
-                  foreground=theme.COLOR_MUTED).grid(row=10, column=1, columnspan=2, sticky="w")
+                  foreground=theme.NOTE).grid(row=10, column=1, columnspan=2, sticky="w")
 
         self.normalize_check = tk.Checkbutton(parent, text=_NORMALIZE_TEXT, variable=self.normalize_var)
         self.normalize_check.grid(row=11, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 0))
@@ -1233,7 +1231,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         # 圧縮方式が「何もしない」のときに、効かない項目を選べなくしている理由（F-11）
         self.none_note_var = tk.StringVar()
-        ttk.Label(parent, textvariable=self.none_note_var, foreground=theme.COLOR_MUTED,
+        ttk.Label(parent, textvariable=self.none_note_var, foreground=theme.NOTE,
                   justify="left").grid(row=13, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4))
 
         self._update_option_visibility()
@@ -1420,10 +1418,10 @@ class VaFaxApp(TkinterDnD.Tk):
 
         menu = self._file_menu
         menu.entryconfig("新規作成", state=state(idle))
-        menu.entryconfig("開く...", state=state(idle))
-        menu.entryconfig("保存...", state=state(can_save))
+        menu.entryconfig("開く…", state=state(idle))
+        menu.entryconfig("保存…", state=state(can_save))
         menu.entryconfig("閉じる", state=state(has_doc))
-        menu.entryconfig("オプション...", state=state(idle))
+        menu.entryconfig("オプション…", state=state(idle))
 
     # ------------------------------------------------------------------ ファイルを開く（F-32）
 
@@ -1442,7 +1440,7 @@ class VaFaxApp(TkinterDnD.Tk):
             messagebox.showerror(
                 APP_NAME,
                 f"「{path.name}」を読み込めませんでした。ファイルが移動・削除されていないか、"
-                "他のアプリで開かれていないかご確認ください。", parent=self)
+                "他のアプリで開かれていないかを確かめてください。", parent=self)
             return None
         try:
             return document_module.load_source(data, self._paper_mm())
@@ -1524,7 +1522,7 @@ class VaFaxApp(TkinterDnD.Tk):
         # ファイルなら、圧縮方式の初めの値を「何もしない」にする（F-06）。
         self._apply_defaults_to_screen(made_by_va_fax=document.all_made_by_va_fax())
         if document.all_made_by_va_fax():
-            self.logger.info("本ツールで保存したファイル：圧縮方式の初めの値を「何もしない」にした")
+            self.logger.info("VA FAX で保存したファイル：圧縮方式の初めの値を「何もしない」にした")
         self.logger.info("ファイルを開いた：%dページ（%s）", source.page_count, source.kind)
         self._set_status(f"ファイルを開きました：{path.name}（{source.page_count}ページ）")
 
@@ -1660,7 +1658,7 @@ class VaFaxApp(TkinterDnD.Tk):
         selected = self.preview_pane.selected_pages() if can_edit else []
         has_selection = bool(selected)
         items: list[Optional[tuple[str, Callable[[], object], bool]]] = [
-            ("追加...", self._on_add_pages, can_edit),
+            ("追加…", self._on_add_pages, can_edit),
             ("削除", self._delete_pages, has_selection and len(selected) < document.page_count),
             None,
         ]
@@ -1822,7 +1820,7 @@ class VaFaxApp(TkinterDnD.Tk):
         document = self.document
         if document is None:
             return
-        self._set_diagnosis_text("診断中です...")
+        self._set_diagnosis_text("診断中です…")
         self.diagnosis = None
         self._assembled = None
         self._diagnosis_token += 1
@@ -2013,7 +2011,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self._saving = True
         self.progress_var.set(0.0)
         self.progress_bar.grid()
-        self._set_status("保存しています...")
+        self._set_status("保存しています…")
         self._set_settings_menu_enabled(False)
         self._update_command_states()
 
@@ -2052,15 +2050,27 @@ class VaFaxApp(TkinterDnD.Tk):
             outcome = saving_module.save_document(
                 doc_bytes, target, profile, options, capacity_method, reduction_strategy,
                 material_paths, on_page_done=on_page_done, on_retry=on_retry)
+        # SaveError・SizeLimitExceededError・ConversionError の派生（ページ数の上限・対応外の用紙）の文は、
+        # このツールが利用者向けに書いた日本語の文なので、そのまま出す。
         except saving_module.SaveError as exc:
             self.logger.info("保存エラー：%s", exc.kind)
-            self._message_queue.put({"type": "save_error", "message": str(exc)})
+            message = str(exc)
+            if exc.__cause__ is not None:
+                # ファイルを書けなかった（OSError）：誤りの型と番号を診断情報に記録し、案内を添える
+                self._errors.record(exc.__cause__, "保存")
+                message += "\n" + CONTACT_NOTICE
+            self._message_queue.put({"type": "save_error", "message": message})
         except size_control_module.SizeLimitExceededError as exc:
-            self.logger.info("保存エラー（容量超過）：%s", exc)
+            self.logger.info("保存エラー（容量超過）：%s", type(exc).__name__)
             self._message_queue.put({"type": "save_error", "message": str(exc)})
         except convert_module.ConversionError as exc:
-            self.logger.info("保存エラー（検証・変換）：%s", exc)
-            self._message_queue.put({"type": "save_error", "message": str(exc)})
+            self.logger.info("保存エラー（検証・変換）：%s", type(exc).__name__)
+            message = str(exc)
+            if type(exc) is convert_module.ConversionError:
+                # 派生でない ConversionError は、組み立てたPDFを開けないなど、予期しない誤り
+                self._errors.record(exc, "保存")
+                message = f"保存中に問題が発生しました。\n{CONTACT_NOTICE}"
+            self._message_queue.put({"type": "save_error", "message": message})
         except Exception as exc:  # 予期しない例外（F-22）：詳細は出さずログと診断情報にのみ記録
             self.logger.error("保存中に予期しないエラーが発生しました：%s", _format_exception_for_log(exc))
             self._errors.record(exc, "保存")
@@ -2107,7 +2117,7 @@ class VaFaxApp(TkinterDnD.Tk):
         elif kind == "progress":
             done, total = message["done"], message["total"]
             self.progress_var.set(done / total * 100 if total else 0)
-            self._set_status(f"保存しています...（{done}／{total}ページ）")
+            self._set_status(f"保存しています…（{done}／{total}ページ）")
         elif kind == "retry":
             pass  # 容量超過での作り直しの経過は、ログファイルにだけ残す（F-17）
         elif kind == "save_error":

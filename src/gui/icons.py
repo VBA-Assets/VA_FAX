@@ -20,7 +20,7 @@ from typing import Optional
 def _icon_dir() -> Path:
     """アイコンの置き場。
 
-    PyInstallerのonefile実行時は展開先（sys._MEIPASS）のgui/icons（build/motfax.specのdatasで
+    PyInstallerのonefile実行時は展開先（sys._MEIPASS）のgui/icons（build/va_fax.specのdatasで
     同梱）、開発時はこのファイルの隣のicons。
     """
     if getattr(sys, "frozen", False):

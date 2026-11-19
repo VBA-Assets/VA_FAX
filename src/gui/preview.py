@@ -158,6 +158,8 @@ class PreviewPane(ttk.Frame):
         self._page_count = 0
         self._generation = 0
         self._selected_index: Optional[int] = None    # 拡大表示しているページ
+        # サムネイルの解像度。画面の拡大率（高 DPI）に合わせて上げ、見た目の大きさを拡大率 100% のときと同じにする
+        self._thumbnail_dpi = max(THUMBNAIL_DPI, round(THUMBNAIL_DPI * theme.scale(self)))
 
         # ページの選択と編集（F-33）。編集そのもの（ページの表の書き換え）は画面の側が行い、
         # ここは「どのページを、どうしたいか」を知らせるだけとする。
@@ -218,8 +220,8 @@ class PreviewPane(ttk.Frame):
         thumb_frame.grid(row=0, column=0, sticky="ns")
         thumb_frame.rowconfigure(0, weight=1)
 
-        self._canvas = tk.Canvas(thumb_frame, bg=theme.COLOR_BG, highlightthickness=0,
-                                  width=110, height=200, takefocus=1)
+        self._canvas = tk.Canvas(thumb_frame, bg=theme.WINDOW_BG, highlightthickness=0,
+                                  width=theme.px(self, 110), height=theme.px(self, 200), takefocus=1)
         scrollbar = ttk.Scrollbar(thumb_frame, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=scrollbar.set)
         self._canvas.grid(row=0, column=0, sticky="ns")
@@ -253,7 +255,7 @@ class PreviewPane(ttk.Frame):
         for sequence in self._context_sequences():
             self._canvas.bind(sequence, lambda e: self._on_thumb_context(None, e))
 
-        large_frame = ttk.Frame(self, width=320, height=320)
+        large_frame = ttk.Frame(self, width=theme.px(self, 320), height=theme.px(self, 320))
         large_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         # 拡大画像の実ピクセルサイズがレイアウトの最小サイズ要求として伝播しないよう、
         # このフレームのサイズは常に親（グリッドの列配分）が決める（画像サイズに引きずられない）。
@@ -267,7 +269,7 @@ class PreviewPane(ttk.Frame):
         large_frame.bind("<Button-5>", self._on_large_mousewheel)
         # ttk.Labelには-heightがなくwidth=0, height=0での画像追従サイズ調整（後述）が
         # できないため、classic tk.Labelのまま残す。
-        self._large_label = tk.Label(large_frame, bg=theme.COLOR_BG)
+        self._large_label = tk.Label(large_frame, bg=theme.WINDOW_BG)
         self._large_label.bind("<MouseWheel>", self._on_large_mousewheel)
         self._large_label.bind("<Button-4>", self._on_large_mousewheel)
         self._large_label.bind("<Button-5>", self._on_large_mousewheel)
@@ -275,7 +277,7 @@ class PreviewPane(ttk.Frame):
         self._large_label.grid(row=0, column=0, sticky="nsew")
 
         self._status_var = tk.StringVar(value=EMPTY_STATUS_TEXT)
-        ttk.Label(self, textvariable=self._status_var, foreground=theme.COLOR_MUTED, anchor="w").grid(
+        ttk.Label(self, textvariable=self._status_var, foreground=theme.NOTE, anchor="w").grid(
             row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
 
     # ------------------------------------------------------------ 外部API
@@ -382,10 +384,10 @@ class PreviewPane(ttk.Frame):
             slot.grid(row=i, column=0, padx=8, pady=6)
             # ttk.Labelには-heightがなく、画像読込前の固定プレースホルダーサイズ
             # （width×height文字/行単位）を確保できないため、classic tk.Labelのまま残す。
-            label = tk.Label(slot, text="…", bg=theme.COLOR_SURFACE, width=7, height=5)
+            label = tk.Label(slot, text="…", bg=theme.FIELD_BG, width=7, height=5)
             label.pack(padx=3, pady=(3, 0))
             # ページ番号（F-30）。並べ替えの後も、いまの並びでの番号を示す。
-            number = tk.Label(slot, text=f"{i + 1}", bg=theme.COLOR_SURFACE, fg=theme.COLOR_MUTED)
+            number = tk.Label(slot, text=f"{i + 1}", bg=theme.FIELD_BG, fg=theme.NOTE)
             number.pack(pady=(0, 2))
             for widget in (slot, label, number):
                 widget.bind("<ButtonPress-1>", lambda e, idx=i: self._on_thumb_press(idx, e))
@@ -675,7 +677,7 @@ class PreviewPane(ttk.Frame):
         else:
             y = bounds[-1][1] + 5
         if self._indicator is None or not self._indicator.winfo_exists():
-            self._indicator = tk.Frame(self._inner, bg=theme.COLOR_ACCENT, height=2)
+            self._indicator = tk.Frame(self._inner, bg=theme.ACCENT, height=2)
         self._indicator.place(x=6, y=max(0, int(y)), relwidth=1.0, width=-12, height=2)
         self._indicator.lift()
 
@@ -859,7 +861,7 @@ class PreviewPane(ttk.Frame):
             # 表示時にのみ縮小する（低解像度で処理すると大津法・自動ディザ判定の
             # 結果が本変換と食い違うため）。サムネイルはページ探し用の簡易表示の
             # ため低解像度のままとする。
-            dpi = request.profile.resolution_dpi_default if request.is_large else THUMBNAIL_DPI
+            dpi = request.profile.resolution_dpi_default if request.is_large else self._thumbnail_dpi
             try:
                 # 圧縮方式「何もしない」（F-11）のときは、材料のページをそのまま表示する
                 if request.raw:

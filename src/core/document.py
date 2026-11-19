@@ -151,7 +151,7 @@ class Document:
         return len({ref.source for ref in self._pages})
 
     def all_made_by_va_fax(self) -> bool:
-        """いまのページが、すべて本ツールで保存したファイルのものか（F-06）。"""
+        """いまのページが、すべてVA FAX で保存したファイルのものか（F-06）。"""
         return bool(self._pages) and all(self._sources[ref.source].made_by_va_fax for ref in self._pages)
 
     def is_untouched_single_source(self) -> bool:

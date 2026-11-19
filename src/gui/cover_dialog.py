@@ -19,7 +19,7 @@ _MIN_ROWS = 5              # 書類の一覧の行の数の、初めの最小
 
 
 def _muted(parent: tk.Misc, text: str, **kwargs) -> ttk.Label:
-    return ttk.Label(parent, text=text, foreground=theme.COLOR_MUTED, **kwargs)
+    return ttk.Label(parent, text=text, foreground=theme.NOTE, **kwargs)
 
 
 class SenderFrame(ttk.Frame):
@@ -29,7 +29,7 @@ class SenderFrame(ttk.Frame):
         super().__init__(master)
         _muted(self, "送付書の送信者の欄に書きます。空の項目は書きません。肩書（例：原告訴訟代理人"
                      "弁護士）は、送付書を作るときに文書ごとに入力します。",
-               wraplength=440, justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+               wraplength=theme.px(self, 440), justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self._vars: dict[str, tk.StringVar] = {}
         rows = (("office", "事務所名："), ("tel", "電話番号："), ("fax", "FAX番号："), ("lawyer", "弁護士名："))
         for i, (name, label) in enumerate(rows[:1] + (("address", "住所："),) + rows[1:], start=1):
@@ -45,7 +45,7 @@ class SenderFrame(ttk.Frame):
                 row=i, column=1, sticky="w", pady=3)
         _muted(self, "住所は2行まで書けます（例：1行目に郵便番号、2行目に所在地）。弁護士名が複数のときは、"
                      "「甲野太郎、丙川三郎」のように書きます。",
-               wraplength=440, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
+               wraplength=theme.px(self, 440), justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     def result(self) -> Sender:
         address = self._address.get("1.0", "end").strip("\n")
@@ -61,7 +61,7 @@ class CoverSheetDialog(tk.Toplevel):
         super().__init__(master)
         self.title("送付書")
         self.resizable(False, False)
-        self.configure(bg=theme.COLOR_BG)
+        self.configure(bg=theme.WINDOW_BG)
         self.result: Optional[CoverInput] = None
         self._rebuild_documents = rebuild_documents
 
@@ -113,7 +113,7 @@ class CoverSheetDialog(tk.Toplevel):
         note = (f"{shown}（事務所名・住所・電話・FAX・弁護士名は、［ファイル］→［オプション］の「送付書」で変えます）"
                 if shown else
                 "事務所名・住所・電話・FAX・弁護士名は、［ファイル］→［オプション］の「送付書」で入力します。")
-        _muted(frm, note, wraplength=560, justify="left").grid(
+        _muted(frm, note, wraplength=theme.px(frm, 560), justify="left").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         # ---- 事件
@@ -139,7 +139,7 @@ class CoverSheetDialog(tk.Toplevel):
         ttk.Label(head, text="枚数", width=7, anchor="center").pack(side="left")
         holder = ttk.Frame(docs)
         holder.pack(fill="x")
-        self._canvas = tk.Canvas(holder, highlightthickness=0, bg=theme.COLOR_BG, borderwidth=0)
+        self._canvas = tk.Canvas(holder, highlightthickness=0, bg=theme.WINDOW_BG, borderwidth=0)
         self._scrollbar = ttk.Scrollbar(holder, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=self._scrollbar.set)
         self._canvas.pack(side="left", fill="x", expand=True)

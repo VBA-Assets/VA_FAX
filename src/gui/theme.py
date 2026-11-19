@@ -17,36 +17,40 @@ option_add（Tkのオプションデータベース）で最小限の既定色�
 from __future__ import annotations
 
 import os
+import sys
 import tkinter as tk
 from pathlib import Path
+from tkinter import font as tkfont
 from tkinter import ttk
 
-# ---- パレット（Office風） -------------------------------------------------------
-COLOR_BG = "#f0f0f0"             # ウィンドウ・フレームの背景
-COLOR_SURFACE = "#ffffff"        # 入力欄・テキスト欄・サムネイル等の背景
-COLOR_CONTROL_BG = "#fdfdfd"     # ボタンの通常時の地色（白寄り）
-COLOR_HOVER_BG = "#e0eef9"       # ボタンのホバー時の地色（淡い青）
-COLOR_PRESSED_BG = "#cce4f7"     # ボタンの押下時の地色（濃い青）
-COLOR_TEXT = "#1a1a1a"           # 通常テキスト
-COLOR_MUTED = "#666666"          # 補足・注記テキスト
-COLOR_PLACEHOLDER = "#999999"    # プレースホルダー文字色
-COLOR_BORDER = "#c8c8c8"         # 枠線・区切り線
-COLOR_WARNING = "#a05a00"        # 注意喚起テキスト（参考プロファイル注記等。既存踏襲）
+from version import FILE_STEM
 
-COLOR_ACCENT = "#0078d4"         # アクセント（フォーカス枠線・主要ボタンの強調枠）
+# ---- パレット（Office風）。名前は雛形（標準\雛形\python の theme.py）と同じにする -----------------
+WINDOW_BG = "#f0f0f0"      # ウィンドウ・フレームの背景
+FIELD_BG = "#ffffff"       # 入力欄・テキスト欄・サムネイル等の背景
+CONTROL_BG = "#fdfdfd"     # ボタンの通常時の地色（白寄り）
+HOVER_BG = "#e0eef9"       # ボタンのホバー時の地色（淡い青）
+PRESSED_BG = "#cce4f7"     # ボタンの押下時の地色（濃い青）
+TEXT = "#1a1a1a"           # 通常テキスト
+NOTE = "#666666"           # 補足・注記テキスト
+BORDER = "#c8c8c8"         # 枠線・区切り線
+ACCENT = "#0078d4"         # アクセント（フォーカス枠線・主要ボタンの強調枠）
+DISABLED_TEXT = "#a0a0a0"  # 押せないときの字（標準 02「テーマとウィジェット」）
+RIBBON_HOVER_BORDER = "#a9cdee"     # リボンのボタンにマウスを重ねたときの枠線
+SCROLL_THUMB, SCROLL_THUMB_ACTIVE = "#c1c1c1", "#a8a8a8"
 
-# リボン（ribbon.py）の色。アイコンはVA Case・VA mints・VA Documentと同じ2色の形とし、
-# ボタンはWordのリボンと同じく、ふだんは枠も地もなく、マウスを重ねたときだけ淡い青の地と枠を出す。
-COLOR_ICON_TINT = "#9cc9f0"           # アイコンの塗りつぶし版を敷く色（薄い青）
-COLOR_ICON_TINT_DISABLED = "#e2e2e2"  # 押せないときの、塗りつぶし版の色
-COLOR_RIBBON_HOVER_BORDER = "#a9cdee"  # リボンのボタンにマウスを重ねたときの枠線
+# ---- VA FAX だけの色（雛形にないもの）
+PLACEHOLDER = "#999999"    # プレースホルダー文字色
+WARNING = "#a05a00"        # 注意喚起テキスト（参考プロファイル注記等）
+# リボン（ribbon.py）のアイコンは、VA Case・VA mints・VA Documentと同じ2色の形とする。
+ICON_TINT = "#9cc9f0"           # アイコンの塗りつぶし版を敷く色（薄い青）
+ICON_TINT_DISABLED = "#e2e2e2"  # 押せないときの、塗りつぶし版の色
+DISABLED_BG = "#f0f0f0"    # 押せない部品の地（ウィンドウ地色に同化）
+SCROLL_TROUGH = "#f0f0f0"  # スクロールバーの溝
 
-COLOR_DISABLED_BG = "#f0f0f0"    # 無効化ウィジェットの背景（ウィンドウ地色に同化）
-COLOR_DISABLED_TEXT = "#a3a3a3"  # 無効化ウィジェットの文字色
-
-COLOR_SCROLL_TROUGH = "#f0f0f0"
-COLOR_SCROLL_THUMB = "#c1c1c1"
-COLOR_SCROLL_THUMB_ACTIVE = "#a8a8a8"
+# ---- 画面の書体（標準 02「テーマとウィジェット」。Windows の画面と同じ Yu Gothic UI 9pt）
+UI_FONT_FAMILY = "Yu Gothic UI"
+UI_FONT_SIZE = 9
 
 _ACCENT_BUTTON_STYLE = "Accent.TButton"
 _NORMAL_BUTTON_STYLE = "TButton"
@@ -68,12 +72,34 @@ THUMBNAIL_FRAME_STYLE = "Thumbnail.TFrame"
 THUMBNAIL_FRAME_SELECTED_STYLE = "ThumbnailSelected.TFrame"
 
 
+def apply_ui_font(root: tk.Misc) -> None:
+    """画面の書体を Yu Gothic UI 9pt にする（Tk の名前付きの書体を変えるので、画面のすべての部品に及ぶ）。
+
+    その書体がない環境（Mac など）では、Tk の既定の書体のままにする。
+    """
+    if UI_FONT_FAMILY not in set(tkfont.families(root)):
+        return
+    for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont", "TkCaptionFont",
+                 "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"):
+        try:
+            tkfont.nametofont(name, root=root).configure(family=UI_FONT_FAMILY, size=UI_FONT_SIZE)
+        except tk.TclError:
+            continue
+
+
+def icon_path() -> Path:
+    """アプリのアイコン（assets/VA_FAX.ico）の場所。exe では展開先（sys._MEIPASS）の assets、
+    ソースでは作業フォルダの assets から読む（雛形と同じ置き場。標準 02「フォルダの構成」）。"""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
+    return base / "assets" / f"{FILE_STEM}.ico"
+
+
 def apply_app_icon(window: tk.Tk) -> None:
     """アプリケーションアイコン（VA／FAXの2行テキスト）をウィンドウに適用する。
 
     default指定により、このウィンドウから開かれる各Toplevelダイアログにも
     自動的に同じアイコンが適用される。アイコンはbuild/make_icon.pyで生成し、
-    resources/icon.icoとしてexeにも同梱される（build/motfax.spec）。
+    assets/VA_FAX.icoとしてexeにも同梱される（build/va_fax.spec）。
     見つからない場合（開発中の未生成等）は既定アイコンのまま起動を続ける。
 
     Windows以外（Macでソースから動かす場合。N-03）のTkは.icoをiconbitmapで
@@ -81,16 +107,16 @@ def apply_app_icon(window: tk.Tk) -> None:
     iconphotoで与える（Macではアプリのアイコン〔Dock〕になる）。読み込めない場合は
     既定アイコンのまま起動を続ける。
     """
-    icon_path = Path(__file__).resolve().parent.parent / "resources" / "icon.ico"
-    if not icon_path.is_file():
+    path = icon_path()
+    if not path.is_file():
         return
     if windowing_system(window) == "win32":
-        window.iconbitmap(default=str(icon_path))
+        window.iconbitmap(default=str(path))
         return
     try:
         from PIL import Image, ImageTk
 
-        with Image.open(icon_path) as image:
+        with Image.open(path) as image:
             photo = ImageTk.PhotoImage(image.convert("RGBA"), master=window)
         window.iconphoto(True, photo)
     except (ImportError, OSError, tk.TclError):
@@ -209,14 +235,14 @@ def create_button(parent: tk.Misc, accent: bool = False, **kwargs) -> ttk.Button
     accent=Trueの場合（決定・保存等の主要な操作ボタン）は、
     枠線をアクセント色にしたスタイルを適用し、他のボタンと区別する
     （地色を塗りつぶす方式にはしない）。地色・ホバー・押下時の色変化は
-    apply_flat_theme()で設定したttk.Styleにより自動的に反映される。
+    apply_theme()で設定したttk.Styleにより自動的に反映される。
     """
     style_name = _ACCENT_BUTTON_STYLE if accent else _NORMAL_BUTTON_STYLE
     kwargs.setdefault("cursor", "hand2")
     return ttk.Button(parent, style=style_name, **kwargs)
 
 
-def apply_flat_theme(root: tk.Misc) -> None:
+def apply_theme(root: tk.Misc) -> None:
     """Office風フラットデザインの既定色を適用する。
 
     ttkウィジェットはttk.Styleで指定する（本関数の主眼）。ttkに対応品がなく
@@ -231,28 +257,29 @@ def apply_flat_theme(root: tk.Misc) -> None:
     ただし独立したtk.Tk()（別インタプリタ）を使う画面（初回起動時のプロファイル選択等）
     では、その都度呼び出す必要がある。
     """
-    root.option_add("*Background", COLOR_BG)
-    root.option_add("*Foreground", COLOR_TEXT)
+    apply_ui_font(root)
+    root.option_add("*Background", WINDOW_BG)
+    root.option_add("*Foreground", TEXT)
 
-    root.option_add("*Text.background", COLOR_SURFACE)
-    root.option_add("*Text.foreground", COLOR_TEXT)
+    root.option_add("*Text.background", FIELD_BG)
+    root.option_add("*Text.foreground", TEXT)
     root.option_add("*Text.relief", "flat")
     root.option_add("*Text.highlightThickness", 1)
-    root.option_add("*Text.highlightBackground", COLOR_BORDER)
-    root.option_add("*Text.highlightColor", COLOR_ACCENT)
+    root.option_add("*Text.highlightBackground", BORDER)
+    root.option_add("*Text.highlightColor", ACCENT)
 
-    root.option_add("*Menu.background", COLOR_SURFACE)
-    root.option_add("*Menu.foreground", COLOR_TEXT)
-    root.option_add("*Menu.activeBackground", COLOR_HOVER_BG)
-    root.option_add("*Menu.activeForeground", COLOR_TEXT)
+    root.option_add("*Menu.background", FIELD_BG)
+    root.option_add("*Menu.foreground", TEXT)
+    root.option_add("*Menu.activeBackground", HOVER_BG)
+    root.option_add("*Menu.activeForeground", TEXT)
     root.option_add("*Menu.relief", "flat")
 
     # チェックボックスはclassic tk.Checkbuttonのまま残す（'clam'テーマのttk版は
     # チェック時の見た目が「✕」形状になり、利用不可のように誤解されるため）。
-    root.option_add("*Checkbutton.selectColor", COLOR_SURFACE)
-    root.option_add("*Checkbutton.activeBackground", COLOR_BG)
-    root.option_add("*Checkbutton.activeForeground", COLOR_TEXT)
-    root.option_add("*Checkbutton.disabledForeground", COLOR_DISABLED_TEXT)
+    root.option_add("*Checkbutton.selectColor", FIELD_BG)
+    root.option_add("*Checkbutton.activeBackground", WINDOW_BG)
+    root.option_add("*Checkbutton.activeForeground", TEXT)
+    root.option_add("*Checkbutton.disabledForeground", DISABLED_TEXT)
 
     style = ttk.Style(root)
     # 'clam'はOSネイティブ装飾（立体的な縁取り・グラデーション等）を持たない、
@@ -260,28 +287,28 @@ def apply_flat_theme(root: tk.Misc) -> None:
     style.theme_use("clam")
 
     # 既定の背景・文字色（"."は全ttkスタイルの基底であり、個別指定がない限り継承される）。
-    style.configure(".", background=COLOR_BG, foreground=COLOR_TEXT)
-    style.configure("TFrame", background=COLOR_BG)
-    style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT)
-    style.map("TLabel", foreground=[("disabled", COLOR_DISABLED_TEXT)])
+    style.configure(".", background=WINDOW_BG, foreground=TEXT)
+    style.configure("TFrame", background=WINDOW_BG)
+    style.configure("TLabel", background=WINDOW_BG, foreground=TEXT)
+    style.map("TLabel", foreground=[("disabled", DISABLED_TEXT)])
 
     # ボタン：白系の面＋細いグレー枠線。ホバーで淡い青の面＋青枠、押下で
     # 一段濃い青（Word・Office系ダイアログのボタン挙動に倣う）。
     # clamの立体感はlightcolor/darkcolorを面と同色にして消す。
     style.configure(
         _NORMAL_BUTTON_STYLE,
-        background=COLOR_CONTROL_BG, foreground=COLOR_TEXT,
-        bordercolor=COLOR_BORDER, lightcolor=COLOR_CONTROL_BG, darkcolor=COLOR_CONTROL_BG,
+        background=CONTROL_BG, foreground=TEXT,
+        bordercolor=BORDER, lightcolor=CONTROL_BG, darkcolor=CONTROL_BG,
         padding=(10, 4),
     )
     style.map(
         _NORMAL_BUTTON_STYLE,
-        background=[("disabled", COLOR_DISABLED_BG), ("pressed", COLOR_PRESSED_BG),
-                    ("active", COLOR_HOVER_BG)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        bordercolor=[("pressed", COLOR_ACCENT), ("active", COLOR_ACCENT)],
-        lightcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        background=[("disabled", DISABLED_BG), ("pressed", PRESSED_BG),
+                    ("active", HOVER_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        bordercolor=[("pressed", ACCENT), ("active", ACCENT)],
+        lightcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        darkcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
     )
 
     # 主要な操作ボタン（決定・保存）：地色は他のボタンと同じ
@@ -289,18 +316,18 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # （常時アクセント色で塗りつぶす方式にはしない）。
     style.configure(
         _ACCENT_BUTTON_STYLE,
-        background=COLOR_CONTROL_BG, foreground=COLOR_TEXT,
-        bordercolor=COLOR_ACCENT, lightcolor=COLOR_CONTROL_BG, darkcolor=COLOR_CONTROL_BG,
+        background=CONTROL_BG, foreground=TEXT,
+        bordercolor=ACCENT, lightcolor=CONTROL_BG, darkcolor=CONTROL_BG,
         padding=(10, 4),
     )
     style.map(
         _ACCENT_BUTTON_STYLE,
-        background=[("disabled", COLOR_DISABLED_BG), ("pressed", COLOR_PRESSED_BG),
-                    ("active", COLOR_HOVER_BG)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        bordercolor=[("disabled", COLOR_BORDER)],
-        lightcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        background=[("disabled", DISABLED_BG), ("pressed", PRESSED_BG),
+                    ("active", HOVER_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        bordercolor=[("disabled", BORDER)],
+        lightcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        darkcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
     )
 
     # リボンのボタン（VA mints・VA Case・VA Documentと同じ）：Wordのリボンと同じく、
@@ -309,12 +336,12 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # 大きいボタン（RibbonLarge）はアイコンの下に文字、小さいボタン（Ribbon）は
     # アイコンの右に文字を置く。
     _ribbon_states = dict(
-        background=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        lightcolor=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        darkcolor=[("disabled", COLOR_BG), ("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        bordercolor=[("disabled", COLOR_BG), ("pressed", COLOR_RIBBON_HOVER_BORDER),
-                     ("active", COLOR_RIBBON_HOVER_BORDER)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
+        background=[("disabled", WINDOW_BG), ("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        lightcolor=[("disabled", WINDOW_BG), ("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        darkcolor=[("disabled", WINDOW_BG), ("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        bordercolor=[("disabled", WINDOW_BG), ("pressed", RIBBON_HOVER_BORDER),
+                     ("active", RIBBON_HOVER_BORDER)],
+        foreground=[("disabled", DISABLED_TEXT)],
     )
     for _name, _padding, _anchor in (
         (RIBBON_BUTTON_STYLE, (3, 1), "w"),
@@ -322,8 +349,8 @@ def apply_flat_theme(root: tk.Misc) -> None:
     ):
         style.configure(
             _name,
-            background=COLOR_BG, foreground=COLOR_TEXT, bordercolor=COLOR_BG,
-            lightcolor=COLOR_BG, darkcolor=COLOR_BG,
+            background=WINDOW_BG, foreground=TEXT, bordercolor=WINDOW_BG,
+            lightcolor=WINDOW_BG, darkcolor=WINDOW_BG,
             padding=_padding, width=0, anchor=_anchor, justify="center", relief="raised",
         )
         style.map(_name, **_ribbon_states)
@@ -331,12 +358,12 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # 同じ見た目に、右に小さな下向きの三角を付ける。
     style.configure(
         RIBBON_MENUBUTTON_STYLE,
-        background=COLOR_BG, foreground=COLOR_TEXT, bordercolor=COLOR_BG,
-        lightcolor=COLOR_BG, darkcolor=COLOR_BG,
+        background=WINDOW_BG, foreground=TEXT, bordercolor=WINDOW_BG,
+        lightcolor=WINDOW_BG, darkcolor=WINDOW_BG,
         padding=(3, 1), width=0, anchor="w", relief="raised",
-        arrowcolor=COLOR_TEXT, arrowsize=6,
+        arrowcolor=TEXT, arrowsize=6,
     )
-    style.map(RIBBON_MENUBUTTON_STYLE, arrowcolor=[("disabled", COLOR_DISABLED_TEXT)],
+    style.map(RIBBON_MENUBUTTON_STYLE, arrowcolor=[("disabled", DISABLED_TEXT)],
               **_ribbon_states)
 
     # リボンの主要な操作（開く・保存の大きいボタン）：見落とされないよう、
@@ -344,26 +371,26 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # 枠線の色をアクセント色にする、という方針に合わせる）。
     style.configure(
         RIBBON_ACCENT_BUTTON_STYLE,
-        background=COLOR_CONTROL_BG, foreground=COLOR_TEXT, bordercolor=COLOR_ACCENT,
-        lightcolor=COLOR_CONTROL_BG, darkcolor=COLOR_CONTROL_BG,
+        background=CONTROL_BG, foreground=TEXT, bordercolor=ACCENT,
+        lightcolor=CONTROL_BG, darkcolor=CONTROL_BG,
         padding=(4, 2), width=0, anchor="center", justify="center", relief="raised",
     )
     style.map(
         RIBBON_ACCENT_BUTTON_STYLE,
-        background=[("disabled", COLOR_DISABLED_BG), ("pressed", COLOR_PRESSED_BG),
-                    ("active", COLOR_HOVER_BG)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        bordercolor=[("disabled", COLOR_BORDER), ("!disabled", COLOR_ACCENT)],
-        lightcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
-        darkcolor=[("pressed", COLOR_PRESSED_BG), ("active", COLOR_HOVER_BG)],
+        background=[("disabled", DISABLED_BG), ("pressed", PRESSED_BG),
+                    ("active", HOVER_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        bordercolor=[("disabled", BORDER), ("!disabled", ACCENT)],
+        lightcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
+        darkcolor=[("pressed", PRESSED_BG), ("active", HOVER_BG)],
     )
 
-    style.configure(RIBBON_FRAME_STYLE, background=COLOR_BG)
-    style.configure(RIBBON_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_TEXT)
+    style.configure(RIBBON_FRAME_STYLE, background=WINDOW_BG)
+    style.configure(RIBBON_LABEL_STYLE, background=WINDOW_BG, foreground=TEXT)
     # 組の名前（リボンの下端に小さく出す）と、組の中の注記
-    style.configure(RIBBON_GROUP_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_MUTED,
+    style.configure(RIBBON_GROUP_LABEL_STYLE, background=WINDOW_BG, foreground=NOTE,
                     padding=(0, 0, 0, 2))
-    style.configure(RIBBON_NOTE_LABEL_STYLE, background=COLOR_BG, foreground=COLOR_MUTED)
+    style.configure(RIBBON_NOTE_LABEL_STYLE, background=WINDOW_BG, foreground=NOTE)
 
     # ラジオボタン：判定枠（インジケータ）は入力欄と同じ白地、枠線は共通の枠線色。
     # チェックボックスはclassic tk.Checkbutton（後述のoption_add）のまま残す
@@ -371,68 +398,68 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # 「利用不可」のように誤解されるため）。
     style.configure(
         "TRadiobutton",
-        background=COLOR_BG, foreground=COLOR_TEXT,
-        indicatorbackground=COLOR_SURFACE, indicatorforeground=COLOR_TEXT,
-        upperbordercolor=COLOR_BORDER, lowerbordercolor=COLOR_BORDER,
+        background=WINDOW_BG, foreground=TEXT,
+        indicatorbackground=FIELD_BG, indicatorforeground=TEXT,
+        upperbordercolor=BORDER, lowerbordercolor=BORDER,
     )
     style.map(
         "TRadiobutton",
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        indicatorbackground=[("disabled", COLOR_DISABLED_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        indicatorbackground=[("disabled", DISABLED_BG)],
     )
 
     # LabelFrame：立体的な溝状の縁取りにせず、薄い一色の枠線のみで囲む。
     style.configure(
         "TLabelframe",
-        background=COLOR_BG, bordercolor=COLOR_BORDER,
-        lightcolor=COLOR_BG, darkcolor=COLOR_BG,
+        background=WINDOW_BG, bordercolor=BORDER,
+        lightcolor=WINDOW_BG, darkcolor=WINDOW_BG,
     )
-    style.configure("TLabelframe.Label", background=COLOR_BG, foreground=COLOR_TEXT)
+    style.configure("TLabelframe.Label", background=WINDOW_BG, foreground=TEXT)
 
     style.configure(
         "TEntry",
-        fieldbackground=COLOR_SURFACE, foreground=COLOR_TEXT,
-        bordercolor=COLOR_BORDER, lightcolor=COLOR_SURFACE, darkcolor=COLOR_SURFACE,
-        insertcolor=COLOR_TEXT, padding=4,
+        fieldbackground=FIELD_BG, foreground=TEXT,
+        bordercolor=BORDER, lightcolor=FIELD_BG, darkcolor=FIELD_BG,
+        insertcolor=TEXT, padding=4,
     )
     style.map(
         "TEntry",
-        fieldbackground=[("readonly", COLOR_SURFACE), ("disabled", COLOR_DISABLED_BG)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        bordercolor=[("focus", COLOR_ACCENT)],
+        fieldbackground=[("readonly", FIELD_BG), ("disabled", DISABLED_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        bordercolor=[("focus", ACCENT)],
     )
 
     style.configure(
         "TCombobox",
-        fieldbackground=COLOR_SURFACE, background=COLOR_SURFACE, foreground=COLOR_TEXT,
-        bordercolor=COLOR_BORDER, lightcolor=COLOR_SURFACE, darkcolor=COLOR_SURFACE,
-        arrowcolor=COLOR_MUTED, relief="flat", padding=3,
+        fieldbackground=FIELD_BG, background=FIELD_BG, foreground=TEXT,
+        bordercolor=BORDER, lightcolor=FIELD_BG, darkcolor=FIELD_BG,
+        arrowcolor=NOTE, relief="flat", padding=3,
     )
     style.map(
         "TCombobox",
-        fieldbackground=[("readonly", COLOR_SURFACE), ("disabled", COLOR_DISABLED_BG)],
-        foreground=[("disabled", COLOR_DISABLED_TEXT)],
-        bordercolor=[("focus", COLOR_ACCENT)],
+        fieldbackground=[("readonly", FIELD_BG), ("disabled", DISABLED_BG)],
+        foreground=[("disabled", DISABLED_TEXT)],
+        bordercolor=[("focus", ACCENT)],
     )
 
     style.configure(
         "TProgressbar",
-        background=COLOR_ACCENT, troughcolor=COLOR_DISABLED_BG,
-        bordercolor=COLOR_DISABLED_BG, lightcolor=COLOR_ACCENT, darkcolor=COLOR_ACCENT,
+        background=ACCENT, troughcolor=DISABLED_BG,
+        bordercolor=DISABLED_BG, lightcolor=ACCENT, darkcolor=ACCENT,
         thickness=12,
     )
 
     style.configure(
         "TScrollbar",
-        troughcolor=COLOR_SCROLL_TROUGH, background=COLOR_SCROLL_THUMB,
-        bordercolor=COLOR_SCROLL_TROUGH, lightcolor=COLOR_SCROLL_THUMB, darkcolor=COLOR_SCROLL_THUMB,
-        arrowcolor=COLOR_MUTED,
+        troughcolor=SCROLL_TROUGH, background=SCROLL_THUMB,
+        bordercolor=SCROLL_TROUGH, lightcolor=SCROLL_THUMB, darkcolor=SCROLL_THUMB,
+        arrowcolor=NOTE,
     )
     style.map(
         "TScrollbar",
-        background=[("pressed", COLOR_SCROLL_THUMB_ACTIVE), ("active", COLOR_SCROLL_THUMB_ACTIVE)],
-        lightcolor=[("pressed", COLOR_SCROLL_THUMB_ACTIVE), ("active", COLOR_SCROLL_THUMB_ACTIVE)],
-        darkcolor=[("pressed", COLOR_SCROLL_THUMB_ACTIVE), ("active", COLOR_SCROLL_THUMB_ACTIVE)],
+        background=[("pressed", SCROLL_THUMB_ACTIVE), ("active", SCROLL_THUMB_ACTIVE)],
+        lightcolor=[("pressed", SCROLL_THUMB_ACTIVE), ("active", SCROLL_THUMB_ACTIVE)],
+        darkcolor=[("pressed", SCROLL_THUMB_ACTIVE), ("active", SCROLL_THUMB_ACTIVE)],
     )
 
     # プレビューのサムネイル枠（F-30）：選択中はアクセント色の枠、非選択は背景色に
@@ -442,11 +469,11 @@ def apply_flat_theme(root: tk.Misc) -> None:
     # TButton・TLabelframeで枠線が表示されているのも同じくreliefがraisedのため）。
     style.configure(
         THUMBNAIL_FRAME_STYLE,
-        background=COLOR_SURFACE, bordercolor=COLOR_BG,
-        lightcolor=COLOR_SURFACE, darkcolor=COLOR_SURFACE, borderwidth=2, relief="raised",
+        background=FIELD_BG, bordercolor=WINDOW_BG,
+        lightcolor=FIELD_BG, darkcolor=FIELD_BG, borderwidth=2, relief="raised",
     )
     style.configure(
         THUMBNAIL_FRAME_SELECTED_STYLE,
-        background=COLOR_SURFACE, bordercolor=COLOR_ACCENT,
-        lightcolor=COLOR_SURFACE, darkcolor=COLOR_SURFACE, borderwidth=2, relief="raised",
+        background=FIELD_BG, bordercolor=ACCENT,
+        lightcolor=FIELD_BG, darkcolor=FIELD_BG, borderwidth=2, relief="raised",
     )

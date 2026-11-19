@@ -46,15 +46,11 @@ def test_drop_index_for_y():
 # ---------------------------------------------------------------- プレビュー欄
 
 @pytest.fixture(scope="module")
-def root():
-    try:
-        r = tk.Tk()
-    except tk.TclError:
-        pytest.skip("画面がない環境")
-    r.withdraw()
-    theme.apply_flat_theme(r)
-    yield r
-    r.destroy()
+def root(tk_root):
+    """conftest の1つの Tk を使う（試験のファイルごとに Tk を作らない。標準 02「テスト」）。"""
+    yield tk_root
+    for child in list(tk_root.winfo_children()):
+        child.destroy()
 
 
 @pytest.fixture

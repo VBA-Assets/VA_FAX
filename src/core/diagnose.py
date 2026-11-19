@@ -96,7 +96,7 @@ def _open_reader(pdf_bytes: bytes) -> pypdf.PdfReader:
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     except pypdf.errors.PdfReadError as exc:
         raise CorruptedPdfError(
-            f"PDFファイルを読み込めませんでした。ファイルが破損している可能性があります：{exc}"
+            "PDFファイルを読み込めませんでした。ファイルが破損している可能性があります。"
         ) from exc
 
     if reader.is_encrypted:

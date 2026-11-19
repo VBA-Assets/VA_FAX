@@ -8,7 +8,7 @@ reportlab〔Ver210〕・PyInstaller のブートローダー）と、リボン�
 ライセンスの全文を、いま入っている部品のファイルから集める。部品を足したり、版を上げたりしたら、
 作り直してコミットする（build/make_release.py が配布物に入れる）。exe に実際に入った部品は、
 ビルドの後に build/work/motfax/PYZ-00.toc・PKG-00.toc で確かめる（使っていない部品は
-build/motfax.spec の excludes で外す）。
+build/va_fax.spec の excludes で外す）。
 
 VA FAX は MIT License。MIT License と合わない部品（GPL・AGPL・LGPL。Ver130 までの img2pdf、
 PyMuPDF など）は配るものに入れない（tests/test_license.py で確かめる）。

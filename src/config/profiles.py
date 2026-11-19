@@ -119,7 +119,7 @@ def _parse_page_size(data: Any, source: str, field_name: str) -> PageSize:
         )
     except (TypeError, KeyError, ValueError) as exc:
         raise ProfileError(
-            f"プロファイル定義（{source}）の{field_name}の形式が不正です：{exc}"
+            f"プロファイル定義（{source}）の{field_name}の形式が不正です"
         ) from exc
 
 
@@ -154,7 +154,7 @@ def _profile_from_dict(data: dict[str, Any], source: str) -> Profile:
             int(data["page_count_limit"]) if data["page_count_limit"] is not None else None
         )
     except (TypeError, ValueError) as exc:
-        raise ProfileError(f"プロファイル定義（{source}）の数値項目が不正です：{exc}") from exc
+        raise ProfileError(f"プロファイル定義（{source}）の数値項目が不正です") from exc
 
     if not resolution_dpi_steps or not jpeg_quality_steps:
         raise ProfileError(
@@ -193,9 +193,9 @@ def load_profile_file(path: Path) -> Profile:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ProfileError(f"プロファイルファイルを読み込めません（{path.name}）：{exc}") from exc
+        raise ProfileError(f"プロファイルファイルを読み込めません（{path.name}）") from exc
     except json.JSONDecodeError as exc:
-        raise ProfileError(f"プロファイルファイルの形式が不正です（{path.name}）：{exc}") from exc
+        raise ProfileError(f"プロファイルファイルの形式が不正です（{path.name}）") from exc
 
     if not isinstance(raw, dict):
         raise ProfileError(f"プロファイルファイルの形式が不正です（{path.name}）")

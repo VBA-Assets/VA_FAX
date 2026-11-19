@@ -3,7 +3,7 @@
   "display_name": "カスタム",
   "verification_status": "custom",
   "source_note": "利用者が自身の契約サービスの公表仕様を確認のうえ入力する雛形プロファイル",
-  "reference_notice": "お使いのサービスの公表仕様をご確認のうえ、各項目を入力してください",
+  "reference_notice": "お使いのサービスの公表仕様を確かめて、各項目を入力してください",
   "max_file_size_bytes": 3145728,
   "page_count_limit": null,
   "output_formats": ["pdf"],

@@ -92,8 +92,8 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "messagebox", recorder)
     try:
         instance = VaFaxApp(load_settings(), load_all_profiles()["motfax"])
-    except tk.TclError:
-        pytest.skip("画面がない環境")
+    except tk.TclError as e:
+        pytest.skip(f"画面がない環境（{e}）")
     instance.withdraw()
     instance.messages = recorder
     instance.work = tmp_path / "work"
@@ -147,7 +147,7 @@ def _save_to(app, monkeypatch, target: Path) -> None:
 
 def test_save_is_one_large_button(app):
     """保存は［保存］の1つ（大きいボタン。2026-11-18 班長指示で、上書きの［保存］と［名前を付けて保存］を
-    1つにした）。メニューも［保存...］だけ。"""
+    1つにした）。メニューも［保存…］だけ。"""
     from gui import theme
     # 青枠（アクセント色の枠線）は［保存］だけ。［開く］［新規作成］は普通の大きいボタン（2026-11-18 班長指示）。
     # ［保存］の青枠は、保存すると違うものができるときだけ（文書がないときは出さない）
@@ -158,7 +158,7 @@ def test_save_is_one_large_button(app):
     assert not hasattr(app, "save_as_button")
     menu = app._file_menu
     labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) == "command"]
-    assert "保存..." in labels and "保存" not in labels and "名前を付けて保存..." not in labels
+    assert "保存…" in labels and "保存" not in labels and "名前を付けて保存…" not in labels
 
 
 def test_starts_empty(app):
@@ -225,9 +225,9 @@ def _menu(app) -> dict[str, bool]:
 def test_page_context_menu_offers_page_commands(app):
     """サムネイルの右クリックメニューから、ページの各コマンドを実行できる。"""
     _open(app)
-    assert list(_menu(app)) == ["追加...", "削除", "左に90°回転", "右に90°回転", "180°回転",
+    assert list(_menu(app)) == ["追加…", "削除", "左に90°回転", "右に90°回転", "180°回転",
                                 "元に戻す", "やり直す"]
-    assert _menu(app) == {"追加...": True, "削除": True, "左に90°回転": True, "右に90°回転": True,
+    assert _menu(app) == {"追加…": True, "削除": True, "左に90°回転": True, "右に90°回転": True,
                           "180°回転": True, "元に戻す": False, "やり直す": False}
 
     # 選択していないページを右クリックすると、そのページだけを選んでからメニューを出す
@@ -601,8 +601,25 @@ def test_options_has_no_settings_menu(app):
               if menubar.type(i) == "cascade"]
     assert "設定" not in labels and "ファイル" in labels and "ヘルプ" in labels
     menu = app._file_menu
-    commands = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) == "command"]
-    assert commands.index("オプション...") < commands.index("終了")
+    entries = [menu.entrycget(i, "label") if menu.type(i) == "command" else "―"
+               for i in range(menu.index("end") + 1)]
+    # 標準 02「メニュー」の並び。［終了］は置かない（ウィンドウの［×］で閉じる）。画面が開く項目は全角の「…」
+    assert entries == ["新規作成", "開く…", "保存…", "閉じる", "―", "オプション…"]
+
+
+def test_help_menu_and_about(app):
+    """［ヘルプ］は「診断情報をコピー／区切り／VA FAX について」。「について」は5行（標準 01「について」）。"""
+    menubar = app.nametowidget(app.cget("menu"))
+    help_index = [i for i in range(menubar.index("end") + 1)
+                  if menubar.type(i) == "cascade" and menubar.entrycget(i, "label") == "ヘルプ"][0]
+    menu = app.nametowidget(menubar.entrycget(help_index, "menu"))
+    entries = [menu.entrycget(i, "label") if menu.type(i) == "command" else "―"
+               for i in range(menu.index("end") + 1)]
+    assert entries == ["診断情報をコピー", "―", "VA FAX について"]
+    from version import VERSION_LABEL
+    assert app.about_text().split("\n") == [
+        f"VA FAX  {VERSION_LABEL}", "FAX送信用PDFの準備（ページの編集・送付書・変換・容量調整）", "",
+        "VBAアセット（vba-assets.net）", "MIT License"]
 
 
 def test_option_turns_off_the_suffix(app, monkeypatch):
@@ -991,8 +1008,8 @@ def test_page_numbers_hidden_at_start_when_option_is_off(tmp_path, monkeypatch):
                            defaults=ConversionDefaults(page_numbers=False, normalize_enabled=False)))
     try:
         instance = VaFaxApp(load_settings(), load_all_profiles()["motfax"])
-    except tk.TclError:
-        pytest.skip("画面がない環境")
+    except tk.TclError as e:
+        pytest.skip(f"画面がない環境（{e}）")
     try:
         instance.withdraw()
         assert instance.page_numbers_check.winfo_manager() == ""

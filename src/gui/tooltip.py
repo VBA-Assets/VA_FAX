@@ -60,11 +60,11 @@ class Tooltip:
         self._win = win = tk.Toplevel(self.widget)
         win.withdraw()  # 位置を決めてから出す（出してからでは位置の指定が効かない）
         win.wm_overrideredirect(True)
-        win.configure(background=theme.COLOR_BORDER)  # 1ピクセルの灰色の枠
+        win.configure(background=theme.BORDER)  # 1ピクセルの灰色の枠
         tk.Label(
             win, text=_by_sentence(text), justify="left",
             wraplength=theme.px(self.widget, WRAP),
-            background=theme.COLOR_SURFACE, foreground=theme.COLOR_TEXT, padx=8, pady=5,
+            background=theme.FIELD_BG, foreground=theme.TEXT, padx=8, pady=5,
         ).pack(padx=1, pady=1)
         win.update_idletasks()
         # 画面の右端・下端からはみ出さないようにする。

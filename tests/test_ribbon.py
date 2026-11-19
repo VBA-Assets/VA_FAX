@@ -20,15 +20,11 @@ from gui.tooltip import Tooltip, _by_sentence  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def root():
-    try:
-        r = tk.Tk()
-    except tk.TclError:
-        pytest.skip("画面がない環境")
-    r.withdraw()
-    theme.apply_flat_theme(r)
-    yield r
-    r.destroy()
+def root(tk_root):
+    """conftest の1つの Tk を使う（試験のファイルごとに Tk を作らない。標準 02「テスト」）。"""
+    yield tk_root
+    for child in list(tk_root.winfo_children()):
+        child.destroy()
 
 
 def test_every_button_icon_has_images():
@@ -41,7 +37,7 @@ def test_every_button_icon_has_images():
 
 
 def test_icon_name_ignores_ellipsis():
-    """ボタンの文字から引く（末尾の「...」や改行は無視する）。"""
+    """ボタンの文字から引く（末尾の「…」「...」や改行は無視する）。"""
     assert icon_name("開く...") == "folder_open"
     assert icon_name("保存") == "save"
     assert icon_name("名前を付けて保存…") == "save"
@@ -98,10 +94,10 @@ def test_ribbon_styles(root):
     主要な操作（開く・保存）は、いつもアクセント色の枠を出す。
     """
     style = ttk.Style(root)
-    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "background") == theme.COLOR_BG
-    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "bordercolor") == theme.COLOR_BG
-    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "background", ["active"]) == theme.COLOR_HOVER_BG
+    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "background") == theme.WINDOW_BG
+    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "bordercolor") == theme.WINDOW_BG
+    assert style.lookup(theme.RIBBON_BUTTON_STYLE, "background", ["active"]) == theme.HOVER_BG
     assert style.lookup(
-        theme.RIBBON_BUTTON_STYLE, "bordercolor", ["active"]) == theme.COLOR_RIBBON_HOVER_BORDER
+        theme.RIBBON_BUTTON_STYLE, "bordercolor", ["active"]) == theme.RIBBON_HOVER_BORDER
     assert style.lookup(
-        theme.RIBBON_ACCENT_BUTTON_STYLE, "bordercolor", ["!disabled"]) == theme.COLOR_ACCENT
+        theme.RIBBON_ACCENT_BUTTON_STYLE, "bordercolor", ["!disabled"]) == theme.ACCENT

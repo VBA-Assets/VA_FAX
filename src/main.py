@@ -17,6 +17,7 @@ from config.profiles import ProfileError, load_all_profiles  # noqa: E402
 from config.settings import Settings, load_settings, save_settings  # noqa: E402
 from gui import theme  # noqa: E402
 from gui.app import ProfileChoiceDialog, VaFaxApp  # noqa: E402
+from version import APP_NAME, APP_USER_MODEL_ID  # noqa: E402
 
 
 def _run_smoke_test(spec: str) -> int:
@@ -79,7 +80,7 @@ def _run_smoke_test(spec: str) -> int:
 
     root = TkinterDnD.Tk()
     root.withdraw()
-    theme.apply_flat_theme(root)
+    theme.apply_theme(root)
 
     # リボンのアイコン（同梱PNG）を実際に読み、exeに入っていることを確かめる（F-15）。
     from gui.icons import BUTTON_ICONS, IconSet
@@ -106,14 +107,21 @@ def _select_initial_profile(settings: Settings) -> Optional[str]:
     # withdrawn状態のまま固着させ、ダイアログが表示されなくなることがあるため、
     # withdrawはせず、目立たない位置に小さく表示するに留める。
     root.geometry("1x1+0+0")
+    # この小さな窓はタスクバーにも出るので、ツールの名前を付け（既定の「tk」にしない）、閉じられたときは
+    # ダイアログの［キャンセル］と同じにする（窓だけが先に消えると、下の root.destroy() で落ちていた。2026-11-19）
+    root.title(APP_NAME)
     # VaFaxApp自体のインタプリタとは別（tk.Tk()を独立して生成するため）、
     # ここでも同じフラットデザイン・アイコンを適用する必要がある。
-    theme.apply_flat_theme(root)
+    theme.apply_theme(root)
     theme.apply_app_icon(root)
     dialog = ProfileChoiceDialog(root, current_profile_id=settings.profile_id)
+    root.protocol("WM_DELETE_WINDOW", dialog._on_cancel)
     root.wait_window(dialog)
     profile_id = dialog.result_profile_id
-    root.destroy()
+    try:
+        root.destroy()
+    except tk.TclError:     # 窓が先に消えていた（念のため）
+        pass
     # 閉じたウィンドウの部品（Tkの変数等）を、ここ（画面のスレッド）で片づけておく。残したままに
     # すると、この後のメイン画面の裏のスレッド（事前診断・保存）でガベージコレクションにかかり、
     # Tclが「別のスレッドからの解放」として異常終了することがある。
@@ -122,7 +130,30 @@ def _select_initial_profile(settings: Settings) -> Optional[str]:
     return profile_id
 
 
+def _prepare_windows() -> None:
+    """Windows で、画面を作る前に1度だけ行う設定（標準 02「テーマとウィジェット」。雛形の main と同じ）。
+
+    高 DPI に対応する（拡大率を 125%・150% などにした画面でも、字がぼやけないように）。ソース
+    （python src/main.py）から起動したときは、タスクバーにこのツールのアイコンを出す（exe では、埋め込んだ
+    アイコンを使う）。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
+    if not getattr(sys, "frozen", False):
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        except Exception:
+            pass
+
+
 def main() -> None:
+    _prepare_windows()
     smoke_spec = os.environ.get("VA_FAX_SMOKE_TEST")
     if smoke_spec:
         sys.exit(_run_smoke_test(smoke_spec))

@@ -5,7 +5,7 @@
 （#0078d4）の角丸タイル上に白文字で描く。グラデーション・影は用いない
 （グローバルUI設計方針のフラットデザイン原則に従う）。
 
-生成先: src/resources/icon.ico（タイトルバー用・exe同梱用の両方で使う）
+生成先: assets/VA_FAX.ico（タイトルバー用・exe同梱用の両方で使う。雛形と同じ置き場）
 実行方法（リポジトリルートで）: python build/make_icon.py
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ FONT_CANDIDATES = [
     r"C:\Windows\Fonts\arialbd.ttf",   # Arial Bold
 ]
 
-OUTPUT = Path(__file__).resolve().parent.parent / "src" / "resources" / "icon.ico"
+OUTPUT = Path(__file__).resolve().parent.parent / "assets" / "VA_FAX.ico"
 ICO_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
 
 

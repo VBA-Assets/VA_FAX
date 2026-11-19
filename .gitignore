@@ -5,3 +5,11 @@ __pycache__/
 dist/
 build/work/
 *.egg-info/
+
+# GitHub で公開する写し（別の git。VBA-Assets/VA_FAX。2026-11-18 に ..\VA_FAX_GitHub から移した）
+/GitHub/
+
+# 配布物（scripts/build_release.py）とマニュアルの PDF（scripts/generate_manual.py）は、作った物なので git に入れない
+release_*/
+dist_next/
+docs/manual/*.pdf

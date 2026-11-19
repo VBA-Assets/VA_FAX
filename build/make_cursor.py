@@ -11,7 +11,7 @@ Pillowは.curを書き出せず、.icoからの変換もPNG圧縮のエントリ
 （Windowsのカーソルとしては互換性が不確か）ため、非圧縮の32ビットDIB
 （XORビットマップ＋ANDマスク）を組み立てて.curのバイト列を直接書き出す。
 
-生成先: src/resources/trash.cur（exeにも同梱する。build/motfax.spec）
+生成先: src/resources/trash.cur（exeにも同梱する。build/va_fax.spec）
 実行方法（リポジトリルートで）: python build/make_cursor.py
 """
 from __future__ import annotations
