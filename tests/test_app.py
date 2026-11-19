@@ -84,23 +84,45 @@ class _Recorder:
         return True
 
 
+def _reset(window: VaFaxApp, settings) -> None:
+    """試験の全体で1つのメイン画面（conftest の main_window）を、起動した直後と同じ状態に戻す。
+
+    メイン画面は TkinterDnD の Tk そのものなので、試験ごとに作り直さない（作り直すと、まれに Tk の初期化に
+    失敗する。標準 02「テスト」）。設定・サービス・文書・処理の選択・誤りの記録を、メイン画面を作ったときと
+    同じにする。"""
+    window._close_document()
+    window.settings = settings
+    window.profile = load_all_profiles()["motfax"]
+    window.profile_label_var.set(app_module._profile_summary(window.profile))
+    window._doc_dir = None
+    window._saving_cover = None
+    window._pending_selection = ([], None)
+    window._normal_geometry = None
+    window._errors = app_module.diagnostics.ErrorLog()     # いまの試験の一時フォルダの errors.json
+    while not window._message_queue.empty():
+        window._message_queue.get_nowait()
+    window._apply_defaults_to_screen()
+    window._update_option_visibility()
+    window._dirty = False
+    window._update_title()
+    window._update_command_states()
+    window.update()
+
+
 @pytest.fixture
-def app(tmp_path, monkeypatch):
+def app(main_window, tmp_path, monkeypatch):
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     monkeypatch.setattr(app_module, "_bring_to_front", lambda _window: None)
     recorder = _Recorder()
     monkeypatch.setattr(app_module, "messagebox", recorder)
-    try:
-        instance = VaFaxApp(load_settings(), load_all_profiles()["motfax"])
-    except tk.TclError as e:
-        pytest.skip(f"画面がない環境（{e}）")
-    instance.withdraw()
+    instance = main_window
+    _reset(instance, load_settings())
     instance.messages = recorder
     instance.work = tmp_path / "work"
     instance.work.mkdir()
     yield instance
     _pump(instance, lambda: not instance._saving)
-    instance.destroy()
+    instance._close_document()
 
 
 def _pump(app, condition, timeout: float = 60.0) -> None:
@@ -629,7 +651,7 @@ def test_option_turns_off_the_suffix(app, monkeypatch):
     assert app.title() == "＊受領書_fax.pdf - VA FAX"
 
     def answer(dialog):
-        assert [dialog.notebook.tab(i, "text") for i in range(4)] == ["保存", "処理内容の既定値", "FAXサービス", "送付書"]
+        assert [dialog.notebook.tab(i, "text") for i in range(4)] == ["保存", "処理内容の既定値", "FAX サービス", "送付書"]
         assert dialog._append_suffix_var.get() is True and dialog._suffix_var.get() == "_fax"
         dialog._append_suffix_var.set(False)
         dialog._update_suffix_state()
@@ -1000,23 +1022,16 @@ def test_normalize_hidden_when_option_is_off(app, monkeypatch):
     assert app.normalize_check.winfo_manager() == "grid" and app.normalize_var.get() is True
 
 
-def test_page_numbers_hidden_at_start_when_option_is_off(tmp_path, monkeypatch):
+def test_page_numbers_hidden_at_start_when_option_is_off(app):
+    """起動したときに読んだ設定で、用紙正規化・ページ番号がオフなら、処理内容の選択に出さない。メイン画面は
+    作り直さず（標準 02「テスト」）、起動のときと同じ手順（_build_options の終わり）で設定を当てて確かめる。"""
     from config.settings import ConversionDefaults, Settings, save_settings
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
-    monkeypatch.setattr(app_module, "_bring_to_front", lambda _window: None)
     save_settings(Settings(profile_id="motfax", first_run_completed=True,
                            defaults=ConversionDefaults(page_numbers=False, normalize_enabled=False)))
-    try:
-        instance = VaFaxApp(load_settings(), load_all_profiles()["motfax"])
-    except tk.TclError as e:
-        pytest.skip(f"画面がない環境（{e}）")
-    try:
-        instance.withdraw()
-        assert instance.page_numbers_check.winfo_manager() == ""
-        assert instance.page_numbers_var.get() is False
-        assert instance.normalize_check.winfo_manager() == "" and instance.normalize_var.get() is False
-    finally:
-        instance.destroy()
+    _reset(app, load_settings())
+    assert app.page_numbers_check.winfo_manager() == ""
+    assert app.page_numbers_var.get() is False
+    assert app.normalize_check.winfo_manager() == "" and app.normalize_var.get() is False
 
 
 # ---------------------------------------------------------------- 新規作成（2026-11-18 班長指示）

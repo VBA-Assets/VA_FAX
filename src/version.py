@@ -9,7 +9,7 @@ VA FAX は、ほかのツールと違い、src の下をパッケージにして
 雛形の __init__.py に当たるものを、このファイルに置く（2026-11-19 班長決定。CLAUDE.md の「標準と違う所」）。
 """
 
-__version__ = "2.1.1"
+__version__ = "2.1.2"
 VERSION_LABEL = "Ver" + __version__.replace(".", "")
 
 APP_NAME = "VA FAX"                          # ツールの名前（題名・メッセージ・「について」はここから作る）

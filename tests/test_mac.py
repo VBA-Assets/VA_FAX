@@ -6,12 +6,14 @@ Mac（darwin・aqua）に差し替えて、Mac側の分岐を通す。あわせ�
 従来と変わらないことも確かめる。
 
 画面の試験は、Tkを1つのプロセスで何度も作り直さないよう（Windowsのpythonでは、
-まれに初期化に失敗する）、メインウィンドウを1つだけ作り、このモジュールの試験で共用する。
+まれに初期化に失敗する）、conftest のメイン画面（main_window。試験の全体で1つ）を使う。
 """
 from __future__ import annotations
 
 import sys
+import tkinter as tk
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,7 +21,7 @@ from config import profiles as profiles_module
 from config import settings as settings_module
 from gui import app as app_module
 from gui import theme
-from gui.preview import wheel_scroll_units
+from gui.preview import PreviewPane, wheel_scroll_units
 import logging_setup
 
 
@@ -91,28 +93,53 @@ def test_open_folder_outside_windows_uses_opener(tmp_path, monkeypatch, platform
 
 # ---------------------------------------------------------------- 画面（Macを装う）
 
-@pytest.fixture(scope="module")
-def mac_app(tmp_path_factory):
-    """Tkのウィンドウシステムをaquaに見せかけてメインウィンドウを作る。
+_MAC_KEYS = ("<Command-z>", "<Command-Z>", "<Command-y>", "<Command-Y>", "<Command-o>", "<Command-n>",
+             "<Command-s>", "<Command-Shift-S>", "<Command-Shift-s>")
 
-    ログ（setup_logger）が班長の%APPDATA%に書かれないよう、APPDATAを一時フォルダに替える。
+
+@pytest.fixture(scope="module")
+def mac_app(main_window):
+    """Tkのウィンドウシステムをaquaに見せかけて、メイン画面でMacのときの処理（アイコン・⌘のキー・
+    プレビュー欄）を通す。
+
+    メイン画面は TkinterDnD の Tk そのものなので、作り直さず、conftest の1つ（main_window）を使う
+    （作り直すと、まれに Tk の初期化に失敗する。標準 02「テスト」）。起動のときに aqua で通る処理
+    （theme.apply_app_icon・_bind_mac_keys・PreviewPane の作成）を、ここで同じように呼ぶ。終わったら、
+    ⌘のキーと::tk::mac::Quitを外し、アイコンを Windows のものに戻す（後の試験に残さない）。
     """
+    window = main_window
     with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
         mp.setattr(theme, "windowing_system", lambda _widget: "aqua")
-        profile = profiles_module.get_profile("motfax")
-        window = app_module.VaFaxApp(settings_module.Settings(), profile)
-        window.withdraw()
+        assert theme.is_aqua(window)
+        theme.apply_app_icon(window)
+        window._bind_mac_keys()
+        top = tk.Toplevel(window)
+        top.withdraw()
+        pane = PreviewPane(top)
         window.update()
-        try:
-            yield window
-        finally:
-            window.destroy()
+    try:
+        yield SimpleNamespace(window=window, preview_pane=pane)
+    finally:
+        pane.destroy()
+        top.destroy()
+        for sequence in _MAC_KEYS:
+            window.unbind_all(sequence)
+        window.deletecommand("::tk::mac::Quit")
+        if hasattr(window, "_va_fax_icon_photo"):
+            del window._va_fax_icon_photo
+        theme.apply_app_icon(window)
+
+
+def test_main_window_binds_mac_keys_only_on_aqua():
+    """起動のとき、⌘のキーは Mac（aqua）のときだけ付ける（標準 02「メニュー」）。"""
+    import inspect
+    source = inspect.getsource(app_module.VaFaxApp.__init__)
+    assert "if theme.is_aqua(self):\n            self._bind_mac_keys()" in source
 
 
 def test_mac_icon_uses_iconphoto(mac_app):
     """Mac（Windows以外）では.icoをiconbitmapに渡さず、Pillowで読んだ画像をiconphotoで与える。"""
-    photo = getattr(mac_app, "_va_fax_icon_photo", None)
+    photo = getattr(mac_app.window, "_va_fax_icon_photo", None)
     assert photo is not None
     assert photo.width() > 0 and photo.height() > 0
 
@@ -129,8 +156,8 @@ def test_mac_command_keys_and_quit_are_bound(mac_app):
     for sequence in ("<Command-z>", "<Command-Z>", "<Control-z>", "<Control-Z>", "<Command-y>",
                      "<Command-o>", "<Command-s>", "<Command-Shift-S>", "<Control-s>",
                      "<Control-Shift-S>"):
-        assert mac_app.bind_all(sequence), sequence
-    assert mac_app.tk.call("info", "commands", "::tk::mac::Quit")
+        assert mac_app.window.bind_all(sequence), sequence
+    assert mac_app.window.tk.call("info", "commands", "::tk::mac::Quit")
 
 
 def test_mac_preview_uses_mac_wheel_units(mac_app):
@@ -139,6 +166,6 @@ def test_mac_preview_uses_mac_wheel_units(mac_app):
 
 def test_remove_cursor_falls_back_to_default_when_x_cursor_is_missing(mac_app, monkeypatch):
     """同梱カーソルも代替のX_cursorも使えない環境（MacのTk等）では既定のカーソル（""）にする。"""
-    assert theme._fallback_remove_cursor(mac_app) == theme.REMOVE_CURSOR_FALLBACK
+    assert theme._fallback_remove_cursor(mac_app.window) == theme.REMOVE_CURSOR_FALLBACK
     monkeypatch.setattr(theme, "REMOVE_CURSOR_FALLBACK", "va_fax_no_such_cursor")
-    assert theme._fallback_remove_cursor(mac_app) == ""
+    assert theme._fallback_remove_cursor(mac_app.window) == ""

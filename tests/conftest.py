@@ -29,25 +29,46 @@ def _config_dir(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def tk_root():
-    """リボン・プレビュー欄の試験が使う、1つの Tk（試験のファイルごとに作らない。標準 02「テスト」）。
+def main_window(tmp_path_factory):
+    """メイン画面（VaFaxApp。TkinterDnD の Tk そのもの）を、試験の全体で1つだけ作る（標準 02「テスト」）。
 
-    Windows の Python では、Tk を作り直すと、まれに初期化に失敗する（「invalid command name "tcl_findLibrary"」
-    「Unable to load tkdnd library」など）。メイン画面（VaFaxApp）は Tk そのものなので、test_app.py・test_mac.py は
-    試験ごとに作っており、1回の実行に1件ほど、画面の試験が「画面がない環境」として飛ばされることがある
-    （2026-11-19 に分かった。直すには、メイン画面の試験で1つの画面を使い回す形に組み替える。CLAUDE.md「標準と違う所」）。
+    Windows の Python では、Tk を1つのプロセスで何度も作り直すと、まれに初期化に失敗する（「invalid command name
+    "tcl_findLibrary"」「Unable to load tkdnd library」など）。Ver211 までは、メイン画面を試験ごとに作り直しており、
+    1回の実行に1件ほど、画面の試験が飛ばされていた（2026-11-19 に分かった。Ver212 で、この形に改めた）。
+    試験ごとの状態は、test_app.py の fixture（app）が戻す。リボン・プレビュー欄の試験は、この画面の子の窓（tk_root）を使う。
     """
     import tkinter as tk
 
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        pytest.skip(f"画面がない環境（{e}）")
-    root.withdraw()
-    from gui import theme
-    theme.apply_theme(root)
-    yield root
-    root.destroy()
+    from config.settings import Settings
+    from gui import app as app_module
+
+    with pytest.MonkeyPatch.context() as mp:
+        # 作るときのログ・誤りの記録も、班長の %APPDATA% に書かない
+        mp.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata_main")))
+        if sys.platform != "win32":
+            mp.setenv("HOME", str(tmp_path_factory.getbasetemp()))
+        mp.setattr(app_module, "_bring_to_front", lambda _window: None)
+        try:
+            window = app_module.VaFaxApp(Settings(), get_profile("motfax"))
+        except tk.TclError as e:
+            pytest.skip(f"画面がない環境（{e}）")
+        window.withdraw()
+        window.update()
+    yield window
+    window.destroy()
+    gc.collect()
+
+
+@pytest.fixture(scope="module")
+def tk_root(main_window):
+    """リボン・プレビュー欄の試験の置き場。メイン画面の子の窓（Toplevel）を、試験のファイルごとに作って消す
+    （Tk は作らない）。"""
+    import tkinter as tk
+
+    top = tk.Toplevel(main_window)
+    top.withdraw()
+    yield top
+    top.destroy()
     gc.collect()
 
 

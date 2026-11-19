@@ -96,12 +96,12 @@ def _open_reader(pdf_bytes: bytes) -> pypdf.PdfReader:
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     except pypdf.errors.PdfReadError as exc:
         raise CorruptedPdfError(
-            "PDFファイルを読み込めませんでした。ファイルが破損している可能性があります。"
+            "PDF ファイルを読み込めませんでした。ファイルが破損している可能性があります。"
         ) from exc
 
     if reader.is_encrypted:
         raise EncryptedPdfError(
-            "このPDFはパスワードで保護されているため処理できません。"
+            "この PDF はパスワードで保護されているため処理できません。"
             "パスワードを解除したファイルをご用意のうえ、再度お試しください。"
         )
     return reader

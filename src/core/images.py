@@ -126,7 +126,7 @@ def _trusted_dpi(image: Image.Image, orientation: int) -> tuple[float, float] | 
 def _jpeg_stream(data: bytes, image: Image.Image) -> DecodedStreamObject:
     colorspace = {"L": "/DeviceGray", "RGB": "/DeviceRGB", "CMYK": "/DeviceCMYK"}.get(image.mode)
     if colorspace is None:
-        raise ImageLoadError("このJPEG画像の色の形式には対応していません。")
+        raise ImageLoadError("この JPEG 画像の色の形式には対応していません。")
     stream = DecodedStreamObject()
     stream.set_data(strip_jpeg_metadata(data))
     stream[NameObject("/Filter")] = NameObject("/DCTDecode")
@@ -176,7 +176,7 @@ def image_to_pdf(data: bytes, paper_mm: tuple[float, float]) -> bytes:
     except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
         raise ImageLoadError("画像を読み込めませんでした。ファイルが壊れているか、対応していない形式です。") from exc
     if image_format not in SUPPORTED_FORMATS or width_px <= 0 or height_px <= 0:
-        raise ImageLoadError("対応している画像は、JPEGとPNGです。")
+        raise ImageLoadError("対応している画像は、JPEG と PNG です。")
 
     try:
         orientation = _orientation(image)

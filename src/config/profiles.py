@@ -129,20 +129,20 @@ def _profile_from_dict(data: dict[str, Any], source: str) -> Profile:
     verification_status = data["verification_status"]
     if verification_status not in _VALID_VERIFICATION_STATUSES:
         raise ProfileError(
-            f"プロファイル定義（{source}）のverification_statusが不正です：{verification_status}"
+            f"プロファイル定義（{source}）の verification_status が不正です：{verification_status}"
         )
 
     output_formats = tuple(str(v) for v in data["output_formats"])
     if "pdf" not in output_formats:
         raise ProfileError(
-            f"プロファイル定義（{source}）のoutput_formatsにpdfが含まれていません"
+            f"プロファイル定義（{source}）の output_formats に pdf が含まれていません"
         )
 
     supported_sizes = tuple(
         _parse_page_size(s, source, "supported_page_sizes") for s in data["supported_page_sizes"]
     )
     if not supported_sizes:
-        raise ProfileError(f"プロファイル定義（{source}）のsupported_page_sizesが空です")
+        raise ProfileError(f"プロファイル定義（{source}）の supported_page_sizes が空です")
 
     normalize_target = _parse_page_size(data["normalize_target"], source, "normalize_target")
 
@@ -158,17 +158,17 @@ def _profile_from_dict(data: dict[str, Any], source: str) -> Profile:
 
     if not resolution_dpi_steps or not jpeg_quality_steps:
         raise ProfileError(
-            f"プロファイル定義（{source}）のresolution_dpi_stepsまたはjpeg_quality_stepsが空です"
+            f"プロファイル定義（{source}）の resolution_dpi_steps または jpeg_quality_steps が空です"
         )
     if len(jpeg_quality_steps) != 3:
         # F-10はJPEG品質を「高・中・低」の3段階選択と定めており、GUIもこの3段階を前提に
         # 実装されている（各段階が具体的にどの品質値かはプロファイルが定める）。
         raise ProfileError(
-            f"プロファイル定義（{source}）のjpeg_quality_stepsは3段階（高・中・低）で"
+            f"プロファイル定義（{source}）の jpeg_quality_steps は3段階（高・中・低）で"
             f"指定してください：{len(jpeg_quality_steps)}段階"
         )
     if max_file_size_bytes <= 0:
-        raise ProfileError(f"プロファイル定義（{source}）のmax_file_size_bytesが不正です")
+        raise ProfileError(f"プロファイル定義（{source}）の max_file_size_bytes が不正です")
 
     return Profile(
         id=str(data["id"]),

@@ -67,14 +67,14 @@ CONFIRM_ADD_FILES_THRESHOLD = 10
 # 開く・追加で選べるファイル（F-32・F-34）
 _OPEN_FILETYPES = [
     ("PDF・画像（JPEG・PNG）", "*.pdf *.jpg *.jpeg *.png"),
-    ("PDFファイル", "*.pdf"),
+    ("PDF ファイル", "*.pdf"),
     ("画像（JPEG・PNG）", "*.jpg *.jpeg *.png"),
 ]
-_PDF_FILETYPES = [("PDFファイル", "*.pdf")]
+_PDF_FILETYPES = [("PDF ファイル", "*.pdf")]
 
 # 処理内容の選択肢の文字（メイン画面と、変換の既定設定の画面で同じものを使う。F-26）
-_MODE_BINARIZE_TEXT = "二値化（白黒・G4圧縮）"
-_MODE_GRAYSCALE_TEXT = "グレースケール（JPEG圧縮）"
+_MODE_BINARIZE_TEXT = "二値化（白黒・G4 圧縮）"
+_MODE_GRAYSCALE_TEXT = "グレースケール（JPEG 圧縮）"
 _NOTHING_TEXT = "何もしない"
 _CAPACITY_REDUCE_TEXT = "解像度・品質を下げて再実行"
 _CAPACITY_SPLIT_TEXT = "分割して再実行"
@@ -249,7 +249,7 @@ class ProfileChoiceFrame(ttk.Frame):
             pid for pid in self.profiles if pid not in ordered_ids
         ]
 
-        ttk.Label(self, text="お使いのインターネットFAXサービスを選択してください。",
+        ttk.Label(self, text="お使いのインターネット FAX サービスを選択してください。",
                   anchor="w", justify="left").pack(fill="x", pady=(0, 6))
 
         # current_profile_idが不正（存在しないid）な場合、どのラジオボタンにも一致せず
@@ -276,7 +276,7 @@ class ProfileChoiceDialog(tk.Toplevel):
 
     def __init__(self, master: Optional[tk.Misc], current_profile_id: Optional[str] = None):
         super().__init__(master)
-        self.title("お使いのFAXサービスを選んでください")
+        self.title("お使いの FAX サービスを選んでください")
         self.resizable(False, False)
         self.result_profile_id: Optional[str] = None
 
@@ -479,7 +479,7 @@ class DefaultsFrame(ttk.Frame):
                         value="always_grayscale", command=self._update_compression_states).grid(
             row=3, column=0, sticky="w", padx=8)
 
-        ttk.Label(opt, text="　JPEG品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
+        ttk.Label(opt, text="　JPEG 品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
         self._quality_combo = ttk.Combobox(
             opt, textvariable=self._quality_label_var, state="readonly", width=10,
             values=_QUALITY_LABELS)
@@ -601,7 +601,7 @@ class OptionsDialog(tk.Toplevel):
         tk.Checkbutton(
             save_tab, text="保存の後に、保存したフォルダを開く", variable=self._open_folder_var,
         ).grid(row=3, column=0, columnspan=2, sticky="w")
-        ttk.Label(save_tab, text="FAXサービスの画面へアップロードするときに、ファイルを探す手間が減ります。",
+        ttk.Label(save_tab, text="FAX サービスの画面へアップロードするときに、ファイルを探す手間が減ります。",
                   foreground=theme.NOTE).grid(row=4, column=0, columnspan=2, sticky="w", padx=(24, 0))
 
         # ---- 処理内容の既定値
@@ -611,7 +611,7 @@ class OptionsDialog(tk.Toplevel):
 
         # ---- FAXサービス
         profile_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(profile_tab, text="FAXサービス")
+        self.notebook.add(profile_tab, text="FAX サービス")
         self.profile_frame = ProfileChoiceFrame(profile_tab, current_profile_id)
         self.profile_frame.pack(fill="x")
         self._custom_button = theme.create_button(
@@ -884,7 +884,7 @@ class VaFaxApp(TkinterDnD.Tk):
         defaults = self.settings.defaults
         lines = [
             f"{APP_NAME} 診断情報（{datetime.now():%Y-%m-%d %H:%M}）",
-            "※ 開いた・保存したファイルの名前、ファイルやフォルダの場所、利用者とPCの名前は"
+            "※ 開いた・保存したファイルの名前、ファイルやフォルダの場所、利用者と PC の名前は"
             "入っていません。",
             "",
         ]
@@ -896,14 +896,14 @@ class VaFaxApp(TkinterDnD.Tk):
             _profile_constraint_text(profile),
             f"確認状態：{profile.verification_status}・ページ数上限：{page_limit}",
             f"解像度の段階：{'→'.join(str(v) for v in profile.resolution_dpi_steps)}dpi・"
-            f"JPEG品質の段階：{'→'.join(str(v) for v in profile.jpeg_quality_steps)}",
+            f"JPEG 品質の段階：{'→'.join(str(v) for v in profile.jpeg_quality_steps)}",
             "",
         ]
 
         lines += [
             "■ 変換の既定設定（F-26）",
             f"圧縮方式：{defaults.compression_policy}・ディザ：{defaults.dither_method}・"
-            f"JPEG品質：{defaults.jpeg_quality_level}",
+            f"JPEG 品質：{defaults.jpeg_quality_level}",
             f"容量超過：{defaults.capacity_exceeded_method}・削減方式：{defaults.size_reduction_strategy}・"
             f"用紙正規化：{'する' if defaults.normalize_enabled else 'しない'}・"
             f"ページ番号：{'入れる' if defaults.page_numbers else '入れない'}",
@@ -928,7 +928,7 @@ class VaFaxApp(TkinterDnD.Tk):
                           f"テキスト{'あり' if diagnosis.has_text else 'なし'}・"
                           f"対応外サイズ {len(diagnosis.unsupported_pages)}ページ）"),
             f"処理内容：圧縮方式 {self.mode_var.get()}・ディザ {self.dither_label_var.get()}・"
-            f"JPEG品質 {self.quality_label_var.get()}・容量超過 {self.capacity_method_var.get()}・"
+            f"JPEG 品質 {self.quality_label_var.get()}・容量超過 {self.capacity_method_var.get()}・"
             f"削減方式 {self.reduction_strategy_label_var.get()}・"
             f"用紙正規化 {'する' if self.normalize_var.get() else 'しない'}・"
             f"ページ番号 {'入れる' if self.page_numbers_var.get() else '入れない'}",
@@ -1012,7 +1012,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         ttk.Label(
             controls_frame,
-            text="※ FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。",
+            text="※ FAX の送信操作は、各インターネット FAX サービスの画面で別途行ってください。",
             foreground=theme.NOTE, anchor="w", justify="left",
         ).grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
 
@@ -1053,7 +1053,7 @@ class VaFaxApp(TkinterDnD.Tk):
                 "［保存］します。")
         self.open_button = group.large(
             "開く", self._on_open,
-            tip="PDFファイルを開きます（Ctrl+O）。"
+            tip="PDF ファイルを開きます（Ctrl+O）。"
                 "ウィンドウへのドラッグ＆ドロップでも開けます。")
         self.save_button = group.large(
             "保存", self._on_save, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
@@ -1148,11 +1148,11 @@ class VaFaxApp(TkinterDnD.Tk):
             "選択中の処理内容（画像への変換など）を行って、場所と名前を指定して保存します（Ctrl+S）。"
             "名前の初めの値は「元の名前_fax.pdf」で、元のファイルは残ります。"
             "同じ名前を選ぶと、置き換えてよいかを確かめてから上書きします。"
-            "FAXの送信操作は、各インターネットFAXサービスの画面で別途行ってください。")
+            "FAX の送信操作は、各インターネット FAX サービスの画面で別途行ってください。")
 
     def _delete_button_tip(self) -> str:
         """［削除］ボタンの説明書き（押せないときは、その理由を示す）。"""
-        base = "選んでいるページを、文書から取り除きます（Deleteキー）。元のファイルは変更しません。"
+        base = "選んでいるページを、文書から取り除きます（Delete キー）。元のファイルは変更しません。"
         if self.document is not None and self.document.page_count <= 1:
             return "最後の1ページは削除できません。" + base
         return base
@@ -1164,7 +1164,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         ttk.Radiobutton(parent, text=_MODE_BINARIZE_TEXT, variable=self.mode_var, value="binarize",
                         command=self._update_mode_widgets).grid(row=1, column=0, sticky="w", padx=8)
-        ttk.Label(parent, text="※ カラー・階調情報が失われますが、FAXで最も一般的な原稿形式です。",
+        ttk.Label(parent, text="※ カラー・階調情報が失われますが、FAX で最も一般的な原稿形式です。",
                   foreground=theme.NOTE).grid(row=1, column=1, columnspan=2, sticky="w")
 
         ttk.Label(parent, text="　ディザ方式：").grid(row=2, column=0, sticky="e", padx=(24, 0))
@@ -1179,7 +1179,7 @@ class VaFaxApp(TkinterDnD.Tk):
                               "実際に送信して確かめてください。", foreground=theme.NOTE).grid(
             row=3, column=1, columnspan=2, sticky="w")
 
-        ttk.Label(parent, text="　JPEG品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
+        ttk.Label(parent, text="　JPEG 品質：").grid(row=4, column=0, sticky="e", padx=(24, 0))
         self.quality_combo = ttk.Combobox(
             parent, textvariable=self.quality_label_var, state="readonly", width=10,
             values=_QUALITY_LABELS)
@@ -2355,7 +2355,7 @@ class VaFaxApp(TkinterDnD.Tk):
         except OSError as exc:
             self.logger.info("送付書の入力を保存できない：%s", type(exc).__name__)
             messagebox.showwarning(
-                APP_NAME, "PDFは保存しましたが、送付書の入力を保存できませんでした"
+                APP_NAME, "PDF は保存しましたが、送付書の入力を保存できませんでした"
                 f"（「{cover_module.DATA_DIRNAME}」フォルダに書き込めません）。\n"
                 "次にこのファイルを開いたときは、送付書の入力の初めの値が空になります。", parent=self)
 

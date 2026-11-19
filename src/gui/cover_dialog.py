@@ -31,7 +31,7 @@ class SenderFrame(ttk.Frame):
                      "弁護士）は、送付書を作るときに文書ごとに入力します。",
                wraplength=theme.px(self, 440), justify="left").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self._vars: dict[str, tk.StringVar] = {}
-        rows = (("office", "事務所名："), ("tel", "電話番号："), ("fax", "FAX番号："), ("lawyer", "弁護士名："))
+        rows = (("office", "事務所名："), ("tel", "電話番号："), ("fax", "FAX 番号："), ("lawyer", "弁護士名："))
         for i, (name, label) in enumerate(rows[:1] + (("address", "住所："),) + rows[1:], start=1):
             ttk.Label(self, text=label).grid(row=i, column=0, sticky="nw", pady=3)
             if name == "address":

@@ -92,7 +92,7 @@ def open_document(pdf_bytes: bytes) -> pdfium.PdfDocument:
         return pdfium.PdfDocument(pdf_bytes)
     except pdfium.PdfiumError as exc:
         # PDFium の誤りの文（英語）は画面に出さない。元の例外は __cause__ に残る（標準 02「メッセージとエラー」）
-        raise ConversionError("PDFを開けませんでした。") from exc
+        raise ConversionError("PDF を開けませんでした。") from exc
 
 
 def get_page_size_mm(page: pdfium.PdfPage) -> tuple[float, float]:

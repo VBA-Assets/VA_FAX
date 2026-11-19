@@ -37,7 +37,7 @@ def merge_pdfs(pdf_bytes_list: Sequence[bytes]) -> bytes:
     MergeErrorを送出する。
     """
     if not pdf_bytes_list:
-        raise ValueError("結合対象のPDFがありません")
+        raise ValueError("結合対象の PDF がありません")
 
     readers: list[pypdf.PdfReader] = []
     for index, data in enumerate(pdf_bytes_list):
@@ -45,12 +45,12 @@ def merge_pdfs(pdf_bytes_list: Sequence[bytes]) -> bytes:
             reader = pypdf.PdfReader(io.BytesIO(data))
         except Exception as exc:
             raise MergeError(
-                "PDFファイルを読み込めませんでした。ファイルが破損している可能性があります。",
+                "PDF ファイルを読み込めませんでした。ファイルが破損している可能性があります。",
                 index,
             ) from exc
         if reader.is_encrypted:
             raise MergeError(
-                "このPDFはパスワードで保護されているため処理できません。"
+                "この PDF はパスワードで保護されているため処理できません。"
                 "パスワードを解除したファイルをご用意のうえ、再度お試しください。",
                 index,
             )
@@ -65,7 +65,7 @@ def merge_pdfs(pdf_bytes_list: Sequence[bytes]) -> bytes:
             writer.append(reader)
         except Exception as exc:
             raise MergeError(
-                "PDFファイルを結合できませんでした。ファイルが破損している可能性があります。",
+                "PDF ファイルを結合できませんでした。ファイルが破損している可能性があります。",
                 index,
             ) from exc
 

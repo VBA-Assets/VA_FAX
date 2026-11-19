@@ -76,7 +76,7 @@ def load_source(data: bytes, paper_mm: tuple[float, float]) -> Source:
             pdf = images.image_to_pdf(data, paper_mm)
         except images.ImageLoadError as exc:
             raise CorruptedSourceError(
-                "このファイルを読み込めませんでした。PDF・JPEG・PNG以外の形式か、"
+                "このファイルを読み込めませんでした。PDF・JPEG・PNG 以外の形式か、"
                 "ファイルが破損している可能性があります。") from exc
         return Source(data=pdf, page_count=1, kind="image")
 
@@ -84,7 +84,7 @@ def load_source(data: bytes, paper_mm: tuple[float, float]) -> Source:
         reader = pypdf.PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
             raise EncryptedSourceError(
-                "このPDFはパスワードで保護されているため処理できません。"
+                "この PDF はパスワードで保護されているため処理できません。"
                 "パスワードを解除したファイルをご用意のうえ、再度お試しください。")
         page_count = len(reader.pages)
         producer = (reader.metadata.producer if reader.metadata else None) or ""
@@ -92,9 +92,9 @@ def load_source(data: bytes, paper_mm: tuple[float, float]) -> Source:
         raise
     except Exception as exc:
         raise CorruptedSourceError(
-            "PDFファイルを読み込めませんでした。ファイルが破損している可能性があります。") from exc
+            "PDF ファイルを読み込めませんでした。ファイルが破損している可能性があります。") from exc
     if page_count == 0:
-        raise CorruptedSourceError("このPDFにはページがありません。")
+        raise CorruptedSourceError("この PDF にはページがありません。")
     return Source(data=bytes(data), page_count=page_count, kind="pdf",
                   made_by_va_fax=producer.strip() == PRODUCER_MARK)
 
