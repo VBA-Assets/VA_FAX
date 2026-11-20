@@ -3,8 +3,8 @@
 
 アイコンはMicrosoftのFluent UI System Icons（MIT License。build/icons_src/LICENSE）の20pxのSVG。
 VA mints・VA Case・VA Documentと同じく2色にする：塗りつぶし版（<名前>_filled.svg）を薄い青
-（theme.COLOR_ICON_TINT）で下に敷き、その上に線画を濃い色（theme.COLOR_TEXT）で重ねる。
-押せないときの版は灰色（COLOR_DISABLED_TEXT・COLOR_ICON_TINT_DISABLED）。
+（theme.ICON_TINT）で下に敷き、その上に線画を濃い色（theme.TEXT）で重ねる。
+押せないときの版は灰色（DISABLED_TEXT・ICON_TINT_DISABLED）。
 大きいボタン用の色付きアイコン（<名前>_large.svg）があれば、それもPNGにする。
 
 PyMuPDFはAGPLのため、配布物（requirements.txt・exe）には含めない。ここで一度PNGにして
@@ -64,9 +64,9 @@ def main() -> None:
                    if not p.stem.endswith(("_filled", "_large")))
     for name in names:
         (OUT / f"{name}.png").write_bytes(
-            _png(two_tone(name, theme.COLOR_TEXT, theme.COLOR_ICON_TINT), SMALL))
+            _png(two_tone(name, theme.TEXT, theme.ICON_TINT), SMALL))
         (OUT / f"{name}_disabled.png").write_bytes(
-            _png(two_tone(name, theme.COLOR_DISABLED_TEXT, theme.COLOR_ICON_TINT_DISABLED), SMALL))
+            _png(two_tone(name, theme.DISABLED_TEXT, theme.ICON_TINT_DISABLED), SMALL))
         large = SRC / f"{name}_large.svg"
         if large.exists():
             (OUT / f"{name}_large.png").write_bytes(

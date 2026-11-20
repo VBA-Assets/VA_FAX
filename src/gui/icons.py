@@ -36,10 +36,9 @@ LARGE_ICON = 32  # 大きいボタンのアイコンの大きさ
 # ボタンの文字（改行・「…」・「...」を除く）→ アイコンの名前（icons/<名前>.png）
 BUTTON_ICONS = {
     # 「ファイル」の組（F-32）
-    "新規作成": "document_text",
     "開く": "folder_open",
     "保存": "save",
-    "名前を付けて保存": "save",
+    "閉じる": "document_dismiss",
     # 「ページ」の組（F-33。回転・元に戻す・やり直すは、VA mintsと同じ自作のアイコン）
     "追加": "document_add",
     "削除": "delete",

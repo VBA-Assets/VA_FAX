@@ -40,7 +40,7 @@ def test_icon_name_ignores_ellipsis():
     """ボタンの文字から引く（末尾の「…」「...」や改行は無視する）。"""
     assert icon_name("開く...") == "folder_open"
     assert icon_name("保存") == "save"
-    assert icon_name("名前を付けて保存…") == "save"
+    assert icon_name("閉じる") == "document_dismiss"
     assert icon_name("追加") == "document_add"
     assert icon_name("回転") == "arrow_rotate"
     assert icon_name("存在しないボタン") is None

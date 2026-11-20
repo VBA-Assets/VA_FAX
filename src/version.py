@@ -3,13 +3,13 @@
 
 版はここの1か所に持つ。spec・scripts/build_release.py・scripts/generate_manual.py は、ここから読むか、
 引数で受ける（版を上げるときは、ここと、マニュアルの原稿のフロントマターの version・更新履歴を直す）。
-画面に出す版は VERSION_LABEL（Ver211。点を入れない。標準 01「版」）を使う。9 の次は A（"2.A.0"）。
+画面に出す版は VERSION_LABEL（Ver213。点を入れない。標準 01「版」）を使う。9 の次は A（"2.A.0"）。
 
 VA FAX は、ほかのツールと違い、src の下をパッケージにしていない（src/config・src/core・src/gui）ので、
 雛形の __init__.py に当たるものを、このファイルに置く（2026-11-19 班長決定。CLAUDE.md の「標準と違う所」）。
 """
 
-__version__ = "2.1.2"
+__version__ = "2.1.3"
 VERSION_LABEL = "Ver" + __version__.replace(".", "")
 
 APP_NAME = "VA FAX"                          # ツールの名前（題名・メッセージ・「について」はここから作る）

@@ -48,9 +48,9 @@ from gui.preview import PreviewPane
 from gui.ribbon import Ribbon
 from logging_setup import setup_logger
 from version import ABOUT_LINE, APP_NAME, VERSION_LABEL
-# 新規作成した文書の、保存するまでの名前（題名。VA Document と同じ）
+# ページのない文書から作った文書の、保存するまでの名前（題名。VA Document と同じ）
 NEW_DOCUMENT_NAME = "新しい文書"
-# 新規作成した文書に、ファイルのページがなく送付書だけがあるときの、保存の名前の元
+# ページのない文書から作った文書に、ファイルのページがなく送付書だけがあるときの、保存の名前の元
 COVER_ONLY_NAME = "送付書.pdf"
 EMPTY_DOCUMENT_TEXT = ("ページがありません。［追加］か、ファイルのドラッグ＆ドロップでページを入れてください。"
                        "送付書は、「送付書」の組の［作成］で作れます。")
@@ -789,7 +789,9 @@ class VaFaxApp(TkinterDnD.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_quit)
         if theme.is_aqua(self):
             self._bind_mac_keys()
-        self._update_command_states()
+        # 起動したときから、ページのない文書を開いておく（「文書のない状態」を作らない。標準 02「メニュー」。
+        # 2026-11-21 班長決定）
+        self._start_blank_document()
         self._poll_queue()
         _bring_to_front(self)
 
@@ -823,15 +825,16 @@ class VaFaxApp(TkinterDnD.Tk):
         menubar = tk.Menu(self)
 
         # ［ファイル］（F-32。リボンの「ファイル」の組と同じ操作）。並びは標準 02「メニュー」のとおり
-        # 新規作成・開く・保存・閉じる／区切り／オプション。画面が開く項目には全角の「…」を付ける。
+        # 開く・保存・閉じる／区切り／オプション。画面が開く項目には全角の「…」を付ける。
         # ［終了］は置かない（ツールはウィンドウの［×］で閉じる。2026-11-19 の指針に合わせて外した）。
+        # ［新規作成］（Ver210）は置かない。起動したときと［閉じる］の後は、ページのない文書になる
+        # （2026-11-21 班長決定。標準 02「メニュー」）
         file_menu = tk.Menu(menubar, tearoff=False)
-        file_menu.add_command(label="新規作成", accelerator="Ctrl+N", command=self._on_new)
         file_menu.add_command(label="開く…", accelerator="Ctrl+O", command=self._on_open)
         # 保存は［保存…］の1つ（保存の画面で場所と名前を指定する。上書きは、同じ名前を選ぶと
         # Windows が確かめる。2026-11-18 班長指示）
         file_menu.add_command(label="保存…", accelerator="Ctrl+S", command=self._on_save)
-        file_menu.add_command(label="閉じる", command=self._on_close_document)
+        file_menu.add_command(label="閉じる", accelerator="Ctrl+W", command=self._on_close_document)
         file_menu.add_separator()
         file_menu.add_command(label="オプション…", command=self._on_options)
         menubar.add_cascade(label="ファイル", menu=file_menu)
@@ -1016,8 +1019,8 @@ class VaFaxApp(TkinterDnD.Tk):
             foreground=theme.NOTE, anchor="w", justify="left",
         ).grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 10))
 
-        # ファイルのドラッグ＆ドロップ（F-32・F-33）：文書を開いていないときは開き、
-        # 開いているときはページの追加とする。ウィンドウのどこに落としても受ける。
+        # ファイルのドラッグ＆ドロップ（F-32・F-33）：ページのない文書のまま何もしていないときは開き、
+        # それ以外はページの追加とする。ウィンドウのどこに落としても受ける。
         for widget in (self, self.preview_pane):
             widget.drop_target_register(DND_FILES)
             widget.dnd_bind("<<DropPosition>>", self._on_drop_position)
@@ -1032,8 +1035,8 @@ class VaFaxApp(TkinterDnD.Tk):
         画面の操作ボタンはすべてここに集約する。組は「ファイル」（開く・保存）と
         「ページ」（追加・削除・回転〔角度はメニューで選ぶ〕・元に戻す・やり直す）と「送付書」
         （作成〔作成済みは編集〕。F-36）の3つ。
-        主要な操作（新規作成・開く・保存・追加・作成）は大きいボタンとし、保存だけをアクセント色の
-        枠線で強調する（決定の操作。開くは、新規作成と同じ「始める」操作なので強調しない。保存の強調は、
+        主要な操作（開く・保存・追加・作成）は大きいボタンとし、保存だけをアクセント色の
+        枠線で強調する（決定の操作。開くは「始める」操作なので強調しない。保存の強調は、
         保存すると開いたファイルと違うものができるときだけとする。2026-11-18 班長指示）。
         各ボタンはマウスを重ねると説明書きを出す（tooltip.py）。
         FAXサービスの変更・処理内容の既定値は、［ファイル］→［オプション］に置く（F-35）。
@@ -1045,12 +1048,9 @@ class VaFaxApp(TkinterDnD.Tk):
         group = ribbon.group("ファイル")
         # 保存は［保存］の1つとし、保存の画面で場所と名前を指定する（Ver200 の［名前を付けて保存］と
         # 小さい［保存］〔上書き保存〕を、2026-11-18 班長指示で1つにした）。
-        # 新規作成（2026-11-18 班長指示）：白紙の文書から、［追加］でページを入れ、送付書を作って保存する
-        self.new_button = group.large(
-            "新規作成", self._on_new, icon="document_text",
-            tip="ページのない新しい文書を作ります（Ctrl+N）。"
-                "［追加］か、ファイルのドラッグ＆ドロップでページを入れ、必要なら送付書を［作成］して、"
-                "［保存］します。")
+        # 並びはメニューと同じ（開く・保存・閉じる。標準 02「メニュー」）。［新規作成］（Ver210）は置かない。
+        # 起動したときと［閉じる］の後は、ページのない文書で、［追加］でページを入れ、送付書を作って保存できる
+        # （2026-11-21 班長決定）
         self.open_button = group.large(
             "開く", self._on_open,
             tip="PDF ファイルを開きます（Ctrl+O）。"
@@ -1058,6 +1058,10 @@ class VaFaxApp(TkinterDnD.Tk):
         self.save_button = group.large(
             "保存", self._on_save, style=theme.RIBBON_ACCENT_BUTTON_STYLE,
             state="disabled", tip=self._save_button_tip)
+        self.close_button = group.small(
+            "閉じる", self._on_close_document, icon="document_dismiss", state="disabled",
+            tip="今の文書を閉じて、ページのない文書にします（Ctrl+W）。"
+                "ページのない文書のまま何もしていない間は、押せません。")
 
         group = ribbon.group("ページ")
         self.add_button = group.large(
@@ -1102,7 +1106,7 @@ class VaFaxApp(TkinterDnD.Tk):
 
         違うものができるのは、圧縮方式が二値化・グレースケールのとき、ページ番号を入れるとき、
         送付書があるとき、ページを編集したとき（開いたファイルの全ページを元の順・向きのまま並べた
-        だけではないとき。新規作成した文書・画像を開いた文書を含む）。
+        だけではないとき。ページのない文書から作った文書・画像を開いた文書を含む）。
         """
         document = self.document
         if document is None or document.page_count == 0:
@@ -1134,8 +1138,8 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def _save_unavailable_reason(self) -> str:
         """保存のボタンが押せない理由（押せるときは空）。"""
-        if self.document is None:
-            return "ファイルを開くと押せるようになります。"
+        if self.document is None or self.document.page_count == 0:
+            return "ファイルを開くか、ページを入れると押せるようになります。"
         if self._saving:
             return "保存しています。終わるまでお待ちください。"
         if self.diagnosis is None:
@@ -1325,7 +1329,7 @@ class VaFaxApp(TkinterDnD.Tk):
             ("<Control-z>", self._on_undo), ("<Control-Z>", self._on_undo),
             ("<Control-y>", self._on_redo), ("<Control-Y>", self._on_redo),
             ("<Control-o>", self._on_open), ("<Control-O>", self._on_open),
-            ("<Control-n>", self._on_new), ("<Control-N>", self._on_new),
+            ("<Control-w>", self._on_close_document), ("<Control-W>", self._on_close_document),
             ("<Control-s>", self._on_save),
             ("<Control-Shift-S>", self._on_save), ("<Control-Shift-s>", self._on_save),
         ):
@@ -1341,7 +1345,7 @@ class VaFaxApp(TkinterDnD.Tk):
         for sequence, handler in (
             ("<Command-z>", self._on_undo), ("<Command-Z>", self._on_undo),
             ("<Command-y>", self._on_redo), ("<Command-Y>", self._on_redo),
-            ("<Command-o>", self._on_open), ("<Command-n>", self._on_new), ("<Command-s>", self._on_save),
+            ("<Command-o>", self._on_open), ("<Command-w>", self._on_close_document), ("<Command-s>", self._on_save),
             ("<Command-Shift-S>", self._on_save), ("<Command-Shift-s>", self._on_save),
         ):
             self.bind_all(sequence, lambda event, h=handler: self._on_global_key(event, h), add="+")
@@ -1366,12 +1370,12 @@ class VaFaxApp(TkinterDnD.Tk):
         if self._save_path is not None:
             return self._save_path.name
         if self._name_base is None:
-            return NEW_DOCUMENT_NAME          # 新規作成した文書（保存するまで）
+            return NEW_DOCUMENT_NAME          # ページのない文書から作った文書（保存するまで）
         return suggested_save_name(self._name_base, self._name_suffix())
 
     def _save_base(self) -> Optional[Path]:
         """保存の画面の名前・場所の初めの値の元にするファイル（F-32）。保存した後は保存したファイル、
-        開いた文書は開いたファイル。新規作成した文書は、初めに入れたファイル（ファイルのページがなく、
+        開いた文書は開いたファイル。ページのない文書から作った文書は、初めに入れたファイル（ファイルのページがなく、
         送付書だけのときは「送付書.pdf」。ページがなければNone）。"""
         if self._save_path is not None:
             return self._save_path
@@ -1403,8 +1407,9 @@ class VaFaxApp(TkinterDnD.Tk):
         def state(enabled: bool) -> str:
             return "normal" if enabled else "disabled"
 
-        self.new_button.configure(state=state(idle))
+        can_close = has_doc and not self._is_blank()
         self.open_button.configure(state=state(idle))
+        self.close_button.configure(state=state(can_close))
         self.save_button.configure(state=state(can_save))
         self._update_save_emphasis()
         self.add_button.configure(state=state(has_doc))
@@ -1417,10 +1422,9 @@ class VaFaxApp(TkinterDnD.Tk):
                                     text="編集" if self._current_cover() is not None else "作成")
 
         menu = self._file_menu
-        menu.entryconfig("新規作成", state=state(idle))
         menu.entryconfig("開く…", state=state(idle))
         menu.entryconfig("保存…", state=state(can_save))
-        menu.entryconfig("閉じる", state=state(has_doc))
+        menu.entryconfig("閉じる", state=state(can_close))
         menu.entryconfig("オプション…", state=state(idle))
 
     # ------------------------------------------------------------------ ファイルを開く（F-32）
@@ -1458,21 +1462,22 @@ class VaFaxApp(TkinterDnD.Tk):
     def _initial_open_dir(self) -> str:
         return self.settings.last_input_dir or str(Path.home())
 
-    def _on_new(self) -> None:
-        """［新規作成］：ページのない新しい文書を作る（2026-11-18 班長指示）。"""
-        if self._saving:
-            return
-        self._guard_unsaved(self._new_document)
-
-    def _new_document(self) -> None:
-        self._close_document()
+    def _start_blank_document(self) -> None:
+        """ページのない新しい文書にする（起動したとき・［閉じる］の後。Ver210 の［新規作成］の状態。2026-11-21
+        班長決定で、「文書のない状態」をなくした）。［追加］・送付書の［作成］ができ、ファイルを落とす・［開く］と、
+        そのファイルを開く（_is_blank）。"""
         self.document = Document()
         self._doc_dir = Path(self._initial_open_dir())
         self._dirty = False                          # 何も入れていない間は、閉じるときに尋ねない
         self._apply_defaults_to_screen()
-        self.logger.info("新しい文書を作った")
-        self._set_status("新しい文書を作りました。")
         self._document_changed([], None)
+
+    def _is_blank(self) -> bool:
+        """ページのない文書のまま、何もしていないか（ページを入れたことがなく、元に戻す・やり直すもない）。
+        ［閉じる］を押せず、ファイルを落とすと、ページの追加ではなく、そのファイルを開く。"""
+        document = self.document
+        return (document is not None and document.page_count == 0
+                and not document.can_undo and not document.can_redo)
 
     def _on_open(self) -> None:
         if self._saving:
@@ -1537,7 +1542,9 @@ class VaFaxApp(TkinterDnD.Tk):
         return True
 
     def _on_close_document(self) -> None:
-        if self.document is not None and not self._saving:
+        """［閉じる］：今の文書を閉じて、ページのない文書にする（VA FAX は終わらない。ページのない文書のまま
+        何もしていない間は押せない。2026-11-21 班長決定）。"""
+        if self.document is not None and not self._saving and not self._is_blank():
             self._guard_unsaved(self._close_document)
 
     def _close_document(self) -> None:
@@ -1557,8 +1564,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.progress_var.set(0.0)
         self.progress_bar.grid_remove()
         self.preview_pane.clear()
-        self._update_title()
-        self._update_command_states()
+        self._start_blank_document()
 
     def _on_quit(self) -> None:
         if self._saving:
@@ -1631,7 +1637,9 @@ class VaFaxApp(TkinterDnD.Tk):
 
     def _on_drop(self, event) -> str:
         paths = [Path(p) for p in _parse_dropped_paths(event.data)]
-        if self.document is None:
+        if self.document is None or self._is_blank():
+            # ページのない文書のまま何もしていないときは、開く（2026-11-21 班長決定。それまでの「文書を開いて
+            # いないとき」と同じ。保存の名前の初めの値・閉じるときの確かめも、開いたときと同じになる）
             self.preview_pane.hide_drop_indicator()
             if paths and not self._saving:
                 self._open_path(paths[0], more_paths=paths[1:])
@@ -1798,7 +1806,7 @@ class VaFaxApp(TkinterDnD.Tk):
         self.progress_bar.grid_remove()
         self._update_title()
         if self.document is not None and self.document.page_count == 0:
-            # ページのない文書（新規作成の直後や、元に戻して空になったとき）：診断・保存はしない
+            # ページのない文書（起動したとき・閉じた後や、元に戻して空になったとき）：診断・保存はしない
             self._diagnosis_token += 1
             self.diagnosis = None
             self._assembled = None

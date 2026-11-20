@@ -94,18 +94,14 @@ def _reset(window: VaFaxApp, settings) -> None:
     window.settings = settings
     window.profile = load_all_profiles()["motfax"]
     window.profile_label_var.set(app_module._profile_summary(window.profile))
-    window._doc_dir = None
     window._saving_cover = None
     window._pending_selection = ([], None)
     window._normal_geometry = None
     window._errors = app_module.diagnostics.ErrorLog()     # いまの試験の一時フォルダの errors.json
     while not window._message_queue.empty():
         window._message_queue.get_nowait()
-    window._apply_defaults_to_screen()
+    window._start_blank_document()             # 起動したときと同じ、ページのない文書（いまの設定で）
     window._update_option_visibility()
-    window._dirty = False
-    window._update_title()
-    window._update_command_states()
     window.update()
 
 
@@ -171,11 +167,11 @@ def test_save_is_one_large_button(app):
     """保存は［保存］の1つ（大きいボタン。2026-11-18 班長指示で、上書きの［保存］と［名前を付けて保存］を
     1つにした）。メニューも［保存…］だけ。"""
     from gui import theme
-    # 青枠（アクセント色の枠線）は［保存］だけ。［開く］［新規作成］は普通の大きいボタン（2026-11-18 班長指示）。
-    # ［保存］の青枠は、保存すると違うものができるときだけ（文書がないときは出さない）
+    # 青枠（アクセント色の枠線）は［保存］だけ。［開く］は普通の大きいボタン（2026-11-18 班長指示）。
+    # ［保存］の青枠は、保存すると違うものができるときだけ（ページがないときは出さない）
     assert str(app.save_button.cget("style")) == theme.RIBBON_LARGE_BUTTON_STYLE
     assert str(app.open_button.cget("style")) == theme.RIBBON_LARGE_BUTTON_STYLE
-    assert str(app.new_button.cget("style")) == theme.RIBBON_LARGE_BUTTON_STYLE
+    assert not hasattr(app, "new_button")          # ［新規作成］は置かない（2026-11-21 班長決定）
     assert str(app.save_button.cget("compound")) == "top" and app.save_button.cget("text") == "保存"
     assert not hasattr(app, "save_as_button")
     menu = app._file_menu
@@ -184,11 +180,17 @@ def test_save_is_one_large_button(app):
 
 
 def test_starts_empty(app):
-    assert app.title() == "VA FAX"
+    """起動したときは、ページのない文書（「文書のない状態」はない。2026-11-21 班長決定）。［追加］・送付書の
+    ［作成］はでき、［保存］［閉じる］は押せない。"""
+    assert app.document is not None and app.document.page_count == 0 and app._is_blank()
+    assert app.title() == "新しい文書 - VA FAX"                      # 何も入れていない間は、未保存の印なし
     assert _state(app.open_button) == "normal"
-    for button in (app.save_button, app.add_button, app.delete_button,
+    assert _state(app.add_button) == "normal" and _state(app.cover_button) == "normal"
+    for button in (app.save_button, app.close_button, app.delete_button,
                    app.undo_button, app.rotate_button):
         assert _state(button) == "disabled"
+    assert app._file_menu.entrycget("閉じる", "state") == "disabled"
+    assert "ページがありません" in app.diagnosis_text.get("1.0", "end")
 
 
 def test_open_shows_document(app):
@@ -206,7 +208,7 @@ def test_broken_file_is_not_opened(app):
     path = app.work / "broken.pdf"
     path.write_bytes((SAMPLES / "sample01_a4_text.pdf").read_bytes()[:500])
     assert not app._open_path(path)
-    assert app.document is None and "broken.pdf" in app.messages.errors[0]
+    assert app._is_blank() and "broken.pdf" in app.messages.errors[0]
     assert not app._open_path(_copy_sample(app, "sample11_encrypted.pdf"))
     assert "パスワード" in app.messages.errors[1]
 
@@ -442,8 +444,9 @@ def test_unsaved_changes_are_asked_before_closing(app, monkeypatch):
     app._on_close_document()
     assert app.document is not None                             # キャンセル：閉じない
     app._on_close_document()
-    assert app.document is None and app.title() == "VA FAX"
+    assert app._is_blank() and app.title() == "新しい文書 - VA FAX"     # 閉じると、ページのない文書
     assert _state(app.save_button) == "disabled" and app.preview_pane._page_count == 0
+    assert _state(app.close_button) == "disabled"
 
 
 def test_save_then_continue_when_closing(app, monkeypatch):
@@ -454,7 +457,7 @@ def test_save_then_continue_when_closing(app, monkeypatch):
     monkeypatch.setattr(app, "_ask_save_changes", lambda _name: "save")
     _save_to(app, monkeypatch, path)
     app._on_close_document()
-    _pump(app, lambda: app.document is None)
+    _pump(app, lambda: app._is_blank())
     assert not _has_text(path)
 
 
@@ -626,7 +629,8 @@ def test_options_has_no_settings_menu(app):
     entries = [menu.entrycget(i, "label") if menu.type(i) == "command" else "―"
                for i in range(menu.index("end") + 1)]
     # 標準 02「メニュー」の並び。［終了］は置かない（ウィンドウの［×］で閉じる）。画面が開く項目は全角の「…」
-    assert entries == ["新規作成", "開く…", "保存…", "閉じる", "―", "オプション…"]
+    assert entries == ["開く…", "保存…", "閉じる", "―", "オプション…"]
+    assert [menu.entrycget(i, "accelerator") for i in range(3)] == ["Ctrl+O", "Ctrl+S", "Ctrl+W"]
 
 
 def test_help_menu_and_about(app):
@@ -1034,23 +1038,32 @@ def test_page_numbers_hidden_at_start_when_option_is_off(app):
     assert app.normalize_check.winfo_manager() == "" and app.normalize_var.get() is False
 
 
-# ---------------------------------------------------------------- 新規作成（2026-11-18 班長指示）
+# ---------------------------------------------------------------- ページのない文書（2026-11-18 班長指示の［新規作成］。
+# 2026-11-21 班長決定で［新規作成］をなくし、起動したときと［閉じる］の後をこの状態にした）
 
-def test_new_document_starts_empty(app):
-    app._on_new()
-    assert app.document is not None and app.document.page_count == 0
-    assert app.title() == "新しい文書 - VA FAX"                      # 何も入れていない間は、未保存の印なし
-    assert _state(app.save_button) == "disabled" and _state(app.add_button) == "normal"
-    assert _state(app.cover_button) == "normal" and app.cover_button.cget("text") == "作成"
-    assert "ページがありません" in app.diagnosis_text.get("1.0", "end")
-    assert app.preview_pane._page_count == 0
+def test_blank_document_has_no_new_command(app):
     menu = app._file_menu
     labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) == "command"]
-    assert labels[0] == "新規作成" and _state(app.new_button) == "normal"
+    assert "新規作成" not in labels and app.cover_button.cget("text") == "作成"
+    assert app.bind_all("<Control-Key-w>") and not app.bind_all("<Control-Key-n>")
+
+
+def test_drop_on_blank_document_opens(app):
+    """ページのない文書のまま何もしていないときに落としたファイルは、開く（保存先・名前は開いたファイル）。
+    ページを入れた後に落としたファイルは、ページの追加。"""
+    first = _copy_sample(app, "sample01_a4_text.pdf")
+    second = _copy_sample(app, "sample02_b4_text.pdf")
+    event = type("E", (), {"data": f"{{{first}}}", "action": "copy", "x_root": 0, "y_root": 0})()
+    app._on_drop(event)
+    _ready(app)
+    assert app._save_path == first and app.document.page_count == 3
+    event.data = f"{{{second}}}"
+    app._on_drop(event)
+    _ready(app)
+    assert app._save_path == first and app.document.page_count > 3
 
 
 def test_new_document_add_pages_then_save_with_first_file_name(app, monkeypatch):
-    app._on_new()
     first = _copy_sample(app, "sample01_a4_text.pdf", "準備書面（1）.pdf")
     second = _copy_sample(app, "sample02_b4_text.pdf", "甲001 契約書.pdf")
     app._add_paths([first, second], None)
@@ -1077,24 +1090,23 @@ def test_new_document_add_pages_then_save_with_first_file_name(app, monkeypatch)
 
 def test_new_document_with_cover_only(app, monkeypatch):
     """送付書だけの文書も保存できる（名前の初めの値は「送付書_fax.pdf」）。"""
-    app._on_new()
     assert app._put_cover(_cover_input())
     _ready(app)
     assert app.document.page_count == 1 and app._current_cover().total == 1
     assert _save_as_dialog_args(app, monkeypatch)["initialfile"] == "送付書_fax.pdf"
 
 
-def test_new_asks_to_save_unsaved_changes(app, monkeypatch):
+def test_close_asks_to_save_unsaved_changes(app, monkeypatch):
     _open(app)
     app._rotate_pages(180)
     _ready(app)
     answers = ["cancel"]
     monkeypatch.setattr(app, "_ask_save_changes", lambda _name: answers.pop(0))
-    app._on_new()
+    app._on_close_document()
     assert app.document.page_count == 3                              # キャンセル：そのまま
     app._dirty = False
-    app._on_new()
-    assert app.document.page_count == 0
+    app._on_close_document()
+    assert app.document.page_count == 0 and app._is_blank()
 
 
 # ---------------------------------------------------------------- ［保存］の青枠（2026-11-18 班長指示）
@@ -1130,7 +1142,6 @@ def test_save_is_emphasized_only_when_saving_changes_something(app):
 
 def test_save_emphasis_for_new_and_image_documents(app):
     from gui import theme
-    app._on_new()
     assert str(app.save_button.cget("style")) == theme.RIBBON_LARGE_BUTTON_STYLE      # ページがない
     _open_image(app)
     app.mode_var.set("none")
@@ -1178,7 +1189,7 @@ def test_unsaved_mark_emphasis_and_close_prompt_follow_one_rule(app, monkeypatch
     _pump(app, lambda: not app._saving)
     assert state() == (False, False)
     app._on_close_document()
-    assert app.document is None and asked == [path.name]
+    assert app._is_blank() and asked == [path.name]
     # 「何もしない」・番号なしで開いたファイル：保存しても同じものしかできない → なし
     other = _copy_sample(app, "sample02_b4_text.pdf")
     app.settings.defaults = replace(app.settings.defaults, compression_policy="none", page_numbers=False)
